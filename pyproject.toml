@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "py-cozi-client"
+version = "1.0.0"
+authors = [
+    {name = "Matthew Jucius"}
+]
+description = "Async Python client for the Cozi Family Organizer API with full type safety and comprehensive error handling"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.7"
+keywords = ["cozi", "family organizer", "calendar", "shopping list", "todo", "api client", "async"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Home Automation",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "aiohttp>=3.9.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "pytest-asyncio>=0.18.0",
+    "black>=22.0",
+    "mypy>=0.950",
+]
+
+[tool.setuptools]
+py-modules = ["cozi_client", "models", "utils", "exceptions"]
