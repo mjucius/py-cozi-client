@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py-cozi-client"
-version = "1.2.0"
+version = "1.3.0"
 authors = [
     {name = "Matthew Jucius"}
 ]
-description = "Async Python client for the Cozi Family Organizer API with full type safety and comprehensive error handling"
+description = "Async Python client for the Cozi Family Organizer API with Pydantic models, full type safety and comprehensive error handling"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.7"
-keywords = ["cozi", "family organizer", "calendar", "shopping list", "todo", "api client", "async"]
+keywords = ["cozi", "family organizer", "calendar", "shopping list", "todo", "api client", "async", "pydantic"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -29,6 +29,7 @@ classifiers = [
 ]
 dependencies = [
     "aiohttp>=3.9.2",
+    "pydantic>=1.10.0",
 ]
 
 [project.optional-dependencies]

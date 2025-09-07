@@ -2,8 +2,8 @@
 Cozi Family Organizer API Client
 
 A Python client for the Cozi Family Organizer REST API.
-This client provides a robust and type-safe
-interface to the Cozi service.
+This client provides a robust and type-safe interface to the Cozi service
+with Pydantic models for automatic validation and serialization.
 """
 
 from cozi_client import CoziClient
@@ -23,7 +23,7 @@ from exceptions import (
     ValidationError,
 )
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 __all__ = [
     "CoziClient",
     "ListType",

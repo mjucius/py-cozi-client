@@ -2,7 +2,7 @@
 Data models for the Cozi API client.
 """
 
-from dataclasses import dataclass
+from pydantic import BaseModel, Field, validator, root_validator
 from datetime import datetime, date, time
 from enum import Enum
 from typing import List, Optional, Dict, Any
@@ -20,167 +20,200 @@ class ItemStatus(Enum):
     INCOMPLETE = "incomplete"
 
 
-@dataclass
-class CoziPerson:
+class CoziPerson(BaseModel):
     """Represents a family member/person in Cozi account."""
-    id: str
-    name: str
+    id: str = Field(alias='accountPersonId')
+    name: str = ''
     email: Optional[str] = None
-    phone: Optional[str] = None
-    color: Optional[int] = None  # Color index for calendar events
-    email_status: Optional[str] = None
-    is_adult: Optional[bool] = None
-    account_person_type: Optional[str] = None
-    account_creator: Optional[bool] = None
+    phone: Optional[str] = Field(None, alias='phoneNumberKey')
+    color: Optional[int] = Field(None, alias='colorIndex')
+    email_status: Optional[str] = Field(None, alias='emailStatus')
+    is_adult: Optional[bool] = Field(None, alias='isAdult')
+    account_person_type: Optional[str] = Field(None, alias='accountPersonType')
+    account_creator: Optional[bool] = Field(None, alias='accountCreator')
     notifiable: Optional[bool] = None
     version: Optional[int] = None
-    phone_number_key: Optional[str] = None
+    phone_number_key: Optional[str] = Field(None, alias='phoneNumberKey')
     settings: Optional[Dict[str, Any]] = None
-    notifiable_features: Optional[List[str]] = None
+    notifiable_features: Optional[List[str]] = Field(None, alias='notifiableFeatures')
     
-    @classmethod
-    def from_api_response(cls, data: Dict[str, Any]) -> 'CoziPerson':
-        """Create CoziPerson from API response data."""
-        return cls(
-            id=data.get('accountPersonId', ''),
-            name=data.get('name', ''),
-            email=data.get('email'),
-            phone=data.get('phoneNumberKey'),  # Map phoneNumberKey from JSON to phone field
-            color=data.get('colorIndex'),
-            email_status=data.get('emailStatus'),
-            is_adult=data.get('isAdult'),
-            account_person_type=data.get('accountPersonType'),
-            account_creator=data.get('accountCreator'),
-            notifiable=data.get('notifiable'),
-            version=data.get('version'),
-            phone_number_key=data.get('phoneNumberKey'),
-            settings=data.get('settings'),
-            notifiable_features=data.get('notifiableFeatures')
-        )
+    class Config:
+        populate_by_name = True
 
 
-@dataclass
-class CoziItem:
+class CoziItem(BaseModel):
     """Represents an item in a Cozi list."""
-    id: Optional[str]
-    text: str
-    status: ItemStatus
+    id: Optional[str] = Field(None, alias='itemId')
+    text: str = ''
+    status: ItemStatus = ItemStatus.INCOMPLETE
     position: Optional[int] = None
-    item_type: Optional[str] = None
-    due_date: Optional[date] = None
+    item_type: Optional[str] = Field(None, alias='itemType')
+    due_date: Optional[date] = Field(None, alias='dueDate')
     notes: Optional[str] = None
     owner: Optional[str] = None
     version: Optional[int] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    created_at: Optional[datetime] = Field(None, alias='createdAt')
+    updated_at: Optional[datetime] = Field(None, alias='updatedAt')
     
-    @classmethod
-    def from_api_response(cls, data: Dict[str, Any]) -> 'CoziItem':
-        """Create CoziItem from API response data."""
-        return cls(
-            id=data.get('itemId') or data.get('id'),
-            text=data.get('text', ''),
-            status=ItemStatus(data.get('status', 'incomplete')),
-            position=data.get('position'),
-            item_type=data.get('itemType'),
-            due_date=cls._parse_date(data.get('dueDate')),
-            notes=data.get('notes'),
-            owner=data.get('owner'),
-            version=data.get('version'),
-            created_at=cls._parse_datetime(data.get('createdAt')),
-            updated_at=cls._parse_datetime(data.get('updatedAt'))
-        )
+    class Config:
+        populate_by_name = True
+        use_enum_values = True
     
-    @staticmethod
-    def _parse_datetime(dt_str: Optional[str]) -> Optional[datetime]:
-        """Parse datetime string from API response."""
-        if not dt_str:
-            return None
-        try:
-            return datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
-        except (ValueError, AttributeError):
-            return None
+    @validator('status', pre=True)
+    def parse_status(cls, v):
+        if isinstance(v, str):
+            return ItemStatus(v)
+        return v
     
-    @staticmethod
-    def _parse_date(date_str: Optional[str]) -> Optional[date]:
-        """Parse date string from API response."""
-        if not date_str:
-            return None
-        try:
-            return datetime.fromisoformat(date_str).date()
-        except (ValueError, AttributeError):
-            return None
+    @validator('due_date', pre=True)
+    def parse_due_date(cls, v):
+        if isinstance(v, str):
+            try:
+                return datetime.fromisoformat(v).date()
+            except (ValueError, AttributeError):
+                return None
+        return v
+    
+    @validator('created_at', 'updated_at', pre=True)
+    def parse_datetime(cls, v):
+        if isinstance(v, str):
+            try:
+                return datetime.fromisoformat(v.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                return None
+        return v
+    
+    @root_validator(pre=True)
+    def handle_id_field(cls, values):
+        if 'id' in values and not values.get('itemId'):
+            values['itemId'] = values['id']
+        return values
 
 
-@dataclass
-class CoziList:
+class CoziList(BaseModel):
     """Represents a Cozi list (shopping or todo)."""
-    id: Optional[str]
-    title: str
-    list_type: ListType
-    items: List[CoziItem]
+    id: Optional[str] = Field(None, alias='listId')
+    title: str = ''
+    list_type: ListType = Field(ListType.TODO, alias='listType')
+    items: List[CoziItem] = Field(default_factory=list)
     owner: Optional[str] = None
-    version: Optional[str] = None
+    version: Optional[int] = None
     notes: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    created_at: Optional[datetime] = Field(None, alias='createdAt')
+    updated_at: Optional[datetime] = Field(None, alias='updatedAt')
     
-    @classmethod
-    def from_api_response(cls, data: Dict[str, Any]) -> 'CoziList':
-        """Create CoziList from API response data."""
-        items_data = data.get('items', [])
-        items = [CoziItem.from_api_response(item) for item in items_data]
-        
-        return cls(
-            id=data.get('listId') or data.get('id'),
-            title=data.get('title', ''),
-            list_type=ListType(data.get('listType', 'todo')),
-            items=items,
-            owner=data.get('owner'),
-            version=data.get('version'),
-            notes=data.get('notes'),
-            created_at=cls._parse_datetime(data.get('createdAt')),
-            updated_at=cls._parse_datetime(data.get('updatedAt'))
-        )
+    class Config:
+        populate_by_name = True
+        use_enum_values = True
     
-    @staticmethod
-    def _parse_datetime(dt_str: Optional[str]) -> Optional[datetime]:
-        """Parse datetime string from API response."""
-        if not dt_str:
-            return None
-        try:
-            return datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
-        except (ValueError, AttributeError):
-            return None
+    @validator('list_type', pre=True)
+    def parse_list_type(cls, v):
+        if isinstance(v, str):
+            return ListType(v)
+        return v
+    
+    @validator('items', pre=True)
+    def parse_items(cls, v):
+        if isinstance(v, list):
+            return [CoziItem.model_validate(item) if isinstance(item, dict) else item for item in v]
+        return v
+    
+    @validator('created_at', 'updated_at', pre=True)
+    def parse_datetime(cls, v):
+        if isinstance(v, str):
+            try:
+                return datetime.fromisoformat(v.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                return None
+        return v
+    
+    @root_validator(pre=True)
+    def handle_id_field(cls, values):
+        if 'id' in values and not values.get('listId'):
+            values['listId'] = values['id']
+        return values
 
 
-@dataclass
-class CoziAppointment:
+class CoziAppointment(BaseModel):
     """Represents a calendar appointment in Cozi."""
-    id: Optional[str]
-    subject: str
-    start_day: date
-    start_time: Optional[time]
-    end_time: Optional[time]
-    date_span: int  # Number of additional days (0 = same day, 1 = spans to next day, etc.)
-    attendees: List[str]  # List of person IDs
+    id: Optional[str] = None
+    subject: str = Field(alias='description')
+    start_day: date = Field(alias='day')
+    start_time: Optional[time] = Field(None, alias='startTime')
+    end_time: Optional[time] = Field(None, alias='endTime')
+    date_span: int = Field(default=0, alias='dateSpan')
+    attendees: List[str] = Field(default_factory=list, alias='householdMembers')
     location: Optional[str] = None
     notes: Optional[str] = None
-    notes_html: Optional[str] = None  # HTML formatted notes
-    notes_plain: Optional[str] = None  # Plain text notes (stripped of formatting)
-    item_type: Optional[str] = None  # appointment, birthday, etc.
-    item_version: Optional[int] = None
-    description_short: Optional[str] = None  # Shorter version of description
-    recurrence: Optional[Dict[str, Any]] = None  # Recurrence rules
-    recurrence_start_day: Optional[str] = None  # Start date for recurring items
-    end_day: Optional[str] = None  # End date for recurring items
-    read_only: Optional[bool] = None  # Whether item can be modified
-    item_source: Optional[str] = None  # Source of the item (e.g., "Holiday US - Cozi")
-    household_member: Optional[str] = None  # For birthdays
-    name: Optional[str] = None  # For birthdays
-    birth_year: Optional[int] = None  # For birthdays
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    notes_html: Optional[str] = Field(None, alias='notesHtml')
+    notes_plain: Optional[str] = Field(None, alias='notesPlain')
+    item_type: Optional[str] = Field(None, alias='itemType')
+    item_version: Optional[int] = Field(None, alias='itemVersion')
+    description_short: Optional[str] = Field(None, alias='descriptionShort')
+    recurrence: Optional[Dict[str, Any]] = None
+    recurrence_start_day: Optional[str] = Field(None, alias='recurrenceStartDay')
+    end_day: Optional[str] = Field(None, alias='endDay')
+    read_only: Optional[bool] = Field(None, alias='readOnly')
+    item_source: Optional[str] = Field(None, alias='itemSource')
+    household_member: Optional[str] = Field(None, alias='householdMember')
+    name: Optional[str] = None
+    birth_year: Optional[int] = Field(None, alias='birthYear')
+    created_at: Optional[datetime] = Field(None, alias='createdAt')
+    updated_at: Optional[datetime] = Field(None, alias='updatedAt')
+    
+    class Config:
+        populate_by_name = True
+        use_enum_values = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat(),
+            date: lambda v: v.isoformat(),
+            time: lambda v: v.strftime("%H:%M:%S")
+        }
+    
+    @validator('start_day', 'end_day', pre=True)
+    def parse_date(cls, v):
+        if isinstance(v, str):
+            try:
+                return datetime.fromisoformat(v).date()
+            except ValueError:
+                return date.today()
+        return v or date.today()
+    
+    @validator('start_time', 'end_time', pre=True)
+    def parse_time(cls, v):
+        if isinstance(v, str):
+            try:
+                time_parts = v.split(':')
+                hour = int(time_parts[0])
+                minute = int(time_parts[1])
+                second = int(time_parts[2]) if len(time_parts) > 2 else 0
+                return time(hour=hour, minute=minute, second=second)
+            except (ValueError, IndexError):
+                return None
+        return v
+    
+    @validator('created_at', 'updated_at', pre=True)
+    def parse_datetime(cls, v):
+        if isinstance(v, str):
+            try:
+                return datetime.fromisoformat(v.replace('Z', '+00:00'))
+            except ValueError:
+                return None
+        return v
+    
+    @root_validator(pre=True)
+    def extract_item_details(cls, values):
+        """Extract nested itemDetails fields to top level."""
+        item_details = values.get('itemDetails', {})
+        if item_details:
+            for key, value in item_details.items():
+                if key not in values or values[key] is None:
+                    values[key] = value
+        
+        if not values.get('description') and values.get('descriptionShort'):
+            values['description'] = values['descriptionShort']
+            
+        return values
     
     @property
     def start_date(self) -> date:
@@ -189,120 +222,6 @@ class CoziAppointment:
     
     def to_api_create_format(self) -> Dict[str, Any]:
         """Convert to API format for creating appointments."""
-        data = {
-            "itemType": "appointment",
-            "create": {
-                "description": self.subject,
-                "day": self.start_day.isoformat(),
-                "dateSpan": self.date_span,
-                "householdMembers": self.attendees if self.attendees else [],
-            }
-        }
-        
-        if self.start_time:
-            data["create"]["startTime"] = self.start_time.strftime("%H:%M:%S")
-        if self.end_time:
-            data["create"]["endTime"] = self.end_time.strftime("%H:%M:%S")
-        if self.location:
-            data["create"]["location"] = self.location
-        if self.notes:
-            data["create"]["notes"] = self.notes
-            
-        return data
-    
-    def to_api_edit_format(self) -> Dict[str, Any]:
-        """Convert to API format for editing appointments."""
-        data = {
-            "itemType": "appointment",
-            "edit": {
-                "id": self.id,
-                "description": self.subject,
-                "day": self.start_day.isoformat(),
-                "dateSpan": self.date_span,
-                "householdMembers": self.attendees if self.attendees else [],
-            }
-        }
-        
-        if self.start_time:
-            data["edit"]["startTime"] = self.start_time.strftime("%H:%M:%S")
-        if self.end_time:
-            data["edit"]["endTime"] = self.end_time.strftime("%H:%M:%S")
-        if self.location:
-            data["edit"]["location"] = self.location
-        if self.notes:
-            data["edit"]["notes"] = self.notes
-            
-        return data
-    
-    @classmethod
-    def from_api_response(cls, data: Dict[str, Any]) -> 'CoziAppointment':
-        """Create CoziAppointment from API response data."""
-        item_details = data.get('itemDetails', {})
-        
-        return cls(
-            id=data.get('id'),
-            subject=data.get('description', '') or data.get('descriptionShort', ''),
-            start_day=cls._parse_date(data.get('day')),
-            start_time=cls._parse_time(data.get('startTime')),
-            end_time=cls._parse_time(data.get('endTime')),
-            date_span=data.get('dateSpan', 0) or item_details.get('dateSpan', 0),
-            attendees=data.get('householdMembers', []),
-            location=item_details.get('location'),
-            notes=item_details.get('notes'),
-            notes_html=item_details.get('notesHtml'),
-            notes_plain=item_details.get('notesPlain'),
-            item_type=data.get('itemType'),
-            item_version=data.get('itemVersion'),
-            description_short=data.get('descriptionShort'),
-            recurrence=item_details.get('recurrence'),
-            recurrence_start_day=item_details.get('recurrenceStartDay'),
-            end_day=item_details.get('endDay') or item_details.get('recurrence', {}).get('endDay'),
-            read_only=item_details.get('readOnly'),
-            item_source=data.get('itemSource'),
-            household_member=item_details.get('householdMember'),
-            name=item_details.get('name'),
-            birth_year=item_details.get('birthYear'),
-            created_at=cls._parse_datetime(data.get('createdAt')),
-            updated_at=cls._parse_datetime(data.get('updatedAt'))
-        )
-    
-    @staticmethod
-    def _parse_date(date_str: Optional[str]) -> date:
-        """Parse date string from API response."""
-        if not date_str:
-            return date.today()
-        try:
-            return datetime.fromisoformat(date_str).date()
-        except (ValueError, AttributeError):
-            return date.today()
-    
-    @staticmethod
-    def _parse_time(time_str: Optional[str]) -> Optional[time]:
-        """Parse time string from API response."""
-        if not time_str:
-            return None
-        try:
-            # Handle both HH:MM and HH:MM:SS formats
-            time_parts = time_str.split(':')
-            hour = int(time_parts[0])
-            minute = int(time_parts[1])
-            second = int(time_parts[2]) if len(time_parts) > 2 else 0
-            return time(hour=hour, minute=minute, second=second)
-        except (ValueError, AttributeError, IndexError):
-            return None
-    
-    @staticmethod
-    def _parse_datetime(dt_str: Optional[str]) -> Optional[datetime]:
-        """Parse datetime string from API response."""
-        if not dt_str:
-            return None
-        try:
-            return datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
-        except (ValueError, AttributeError):
-            return None
-    
-    def to_api_create_format(self) -> Dict[str, Any]:
-        """Convert appointment to API create format."""
         return {
             "itemType": "appointment",
             "create": {
@@ -320,7 +239,7 @@ class CoziAppointment:
         }
     
     def to_api_edit_format(self) -> Dict[str, Any]:
-        """Convert appointment to API edit format."""
+        """Convert to API format for editing appointments."""
         if not self.id:
             raise ValueError("Cannot edit appointment without ID")
         

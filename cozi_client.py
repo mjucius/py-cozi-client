@@ -319,7 +319,7 @@ class CoziClient:
         response = await self._make_request("GET", endpoint)
         
         if isinstance(response, list):
-            return [CoziPerson.from_api_response(person) for person in response]
+            return [CoziPerson.model_validate(person) for person in response]
         return []
     
     # List Management
@@ -336,7 +336,7 @@ class CoziClient:
         response = await self._make_request("GET", endpoint)
         
         if isinstance(response, list):
-            return [CoziList.from_api_response(list_data) for list_data in response]
+            return [CoziList.model_validate(list_data) for list_data in response]
         return []
     
     async def get_lists_by_type(self, list_type: ListType) -> List[CoziList]:
@@ -374,7 +374,7 @@ class CoziClient:
             data={"title": title, "listType": list_type.value}
         )
         
-        return CoziList.from_api_response(response)
+        return CoziList.model_validate(response)
     
     async def update_list(self, list_obj: CoziList) -> CoziList:
         """
@@ -417,7 +417,7 @@ class CoziClient:
         }
         
         response = await self._make_request("PUT", endpoint, data=data)
-        return CoziList.from_api_response(response)
+        return CoziList.model_validate(response)
     
     async def delete_list(self, list_id: str) -> bool:
         """
@@ -459,7 +459,7 @@ class CoziClient:
             data={"text": text, "position": position}
         )
         
-        return CoziItem.from_api_response(response)
+        return CoziItem.model_validate(response)
     
     async def update_item_text(self, list_id: str, item_id: str, text: str) -> CoziItem:
         """
@@ -480,7 +480,7 @@ class CoziClient:
         endpoint = f"/api/ext/{self.API_VERSION}/{self._account_id}/list/{list_id}/item/{item_id}"
         response = await self._make_request("PUT", endpoint, data={"text": text})
         
-        return CoziItem.from_api_response(response)
+        return CoziItem.model_validate(response)
     
     async def mark_item(self, list_id: str, item_id: str, status: ItemStatus) -> CoziItem:
         """
@@ -498,7 +498,7 @@ class CoziClient:
         endpoint = f"/api/ext/{self.API_VERSION}/{self._account_id}/list/{list_id}/item/{item_id}"
         response = await self._make_request("PUT", endpoint, data={"status": status.value})
         
-        return CoziItem.from_api_response(response)
+        return CoziItem.model_validate(response)
     
     async def remove_items(self, list_id: str, item_ids: List[str]) -> bool:
         """
@@ -556,7 +556,7 @@ class CoziClient:
         elif isinstance(response, list):
             for appt_data in response:
                 try:
-                    appointments.append(CoziAppointment.from_api_response(appt_data))
+                    appointments.append(CoziAppointment.model_validate(appt_data))
                 except Exception as e:
                     logger.warning(f"Failed to parse appointment: {e}")
         
@@ -606,16 +606,17 @@ class CoziClient:
             attendees = item_data.get('householdMembers', [])
             date_span = item_data.get('dateSpan', 0)
             
-            return CoziAppointment(
-                id=item_data.get('id'),
-                subject=subject,
-                start_day=start_day,
-                start_time=start_time,
-                end_time=end_time,
-                date_span=date_span,
-                attendees=attendees,
-                location=location
-            )
+            appointment_data = {
+                'id': item_data.get('id'),
+                'description': subject,
+                'day': start_day.isoformat(),
+                'startTime': start_time.strftime('%H:%M:%S') if start_time else None,
+                'endTime': end_time.strftime('%H:%M:%S') if end_time else None,
+                'dateSpan': date_span,
+                'householdMembers': attendees,
+                'itemDetails': {'location': location} if location else {}
+            }
+            return CoziAppointment.model_validate(appointment_data)
             
         except Exception as e:
             logger.error(f"Error parsing calendar item: {e}")

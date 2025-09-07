@@ -144,8 +144,8 @@ def validate_list_against_json(cozi_list: CoziList, json_data: dict, operation: 
     
     # Check list_type mapping (listType in JSON vs list_type in model)
     json_list_type = json_data.get('listType', 'todo')
-    if cozi_list.list_type.value != json_list_type:
-        validation_errors.append(f"List type mismatch: model='{cozi_list.list_type.value}', json='{json_list_type}'")
+    if cozi_list.list_type != json_list_type:
+        validation_errors.append(f"List type mismatch: model='{cozi_list.list_type}', json='{json_list_type}'")
     
     # Check owner mapping
     json_owner = json_data.get('owner')
@@ -227,8 +227,8 @@ def validate_item_against_json(cozi_item: CoziItem, json_data: dict, context: st
     
     # Check status mapping
     json_status = json_data.get('status', 'incomplete')
-    if cozi_item.status.value != json_status:
-        validation_errors.append(f"{context} status mismatch: model='{cozi_item.status.value}', json='{json_status}'")
+    if cozi_item.status != json_status:
+        validation_errors.append(f"{context} status mismatch: model='{cozi_item.status}', json='{json_status}'")
     
     # Check position mapping
     json_position = json_data.get('position')
@@ -300,7 +300,7 @@ def print_list_details(cozi_list):
     """Print detailed information about a list."""
     print(f"  📝 Title: {cozi_list.title}")
     print(f"  🆔 ID: {cozi_list.id}")
-    print(f"  📋 Type: {cozi_list.list_type.value}")
+    print(f"  📋 Type: {cozi_list.list_type}")
     print(f"  📦 Items: {len(cozi_list.items)}")
     
     if cozi_list.items:
@@ -608,11 +608,11 @@ async def test_list_operations():
                     
                 # Show what types of lists we actually got in the model objects
                 if shopping_lists:
-                    shopping_types = [f"{lst.title}({lst.list_type.value})" for lst in shopping_lists[:3]]
+                    shopping_types = [f"{lst.title}({lst.list_type})" for lst in shopping_lists[:3]]
                     print_info(f"Shopping list models (first 3): {shopping_types}")
                 
                 if todo_lists:
-                    todo_types = [f"{lst.title}({lst.list_type.value})" for lst in todo_lists[:3]]
+                    todo_types = [f"{lst.title}({lst.list_type})" for lst in todo_lists[:3]]
                     print_info(f"Todo list models (first 3): {todo_types}")
                 
                 # Only validate if we can find matching JSON for the model
