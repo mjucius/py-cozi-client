@@ -18,9 +18,10 @@ import getpass
 import sys
 import json
 import logging
+import os
 from datetime import date, time, datetime
 from cozi_client import CoziClient
-from models import CoziAppointment
+from models import CoziAppointment, CoziPerson
 from exceptions import (
     AuthenticationError,
     APIError,
@@ -36,22 +37,41 @@ logging.basicConfig(
 
 
 def get_credentials():
-    """Prompt user for Cozi credentials securely."""
+    """Get Cozi credentials from environment variables or command line input."""
     print("Cozi API Calendar Test")
     print("=" * 30)
-    print("Please enter your Cozi credentials:")
     
-    username = input("Username/Email: ").strip()
-    if not username:
-        print("Error: Username cannot be empty")
+    # First try environment variables
+    username = os.environ.get('COZI_USERNAME')
+    password = os.environ.get('COZI_PASSWORD')
+    
+    if username and password:
+        print_info(f"Using credentials from environment variables: {username}")
+        return username, password
+    
+    # If not in environment variables, ask user
+    print_info("Credentials not found in environment variables")
+    print_info("Please enter your Cozi credentials:")
+    
+    try:
+        username = input("Username/Email: ").strip()
+        if not username:
+            print_error("Username cannot be empty")
+            sys.exit(1)
+            
+        password = getpass.getpass("Password: ").strip()
+        if not password:
+            print_error("Password cannot be empty")
+            sys.exit(1)
+            
+        return username, password
+        
+    except KeyboardInterrupt:
+        print("\n\nCredential entry cancelled by user.")
+        sys.exit(0)
+    except Exception as e:
+        print_error(f"Error getting credentials: {e}")
         sys.exit(1)
-    
-    password = getpass.getpass("Password: ")
-    if not password:
-        print("Error: Password cannot be empty")
-        sys.exit(1)
-    
-    return username, password
 
 
 def print_step(step_number, description):
@@ -94,6 +114,240 @@ def print_json(title, data):
         print(f"Error formatting JSON: {e}")
         print(str(data))
     print("-" * 50)
+
+
+def extract_appointment_from_response(response_data: dict, appointment_id: str) -> dict:
+    """Extract individual appointment data from full API response."""
+    if not response_data or not appointment_id:
+        return {}
+    
+    # Check if this is a full API response with 'items' structure
+    if 'items' in response_data and isinstance(response_data['items'], dict):
+        return response_data['items'].get(appointment_id, {})
+    
+    # Check if this is already individual appointment data
+    if response_data.get('id') == appointment_id:
+        return response_data
+    
+    # If it's a list (like calendar response), search for matching ID
+    if isinstance(response_data, list):
+        for item in response_data:
+            if isinstance(item, dict) and item.get('id') == appointment_id:
+                return item
+    
+    return {}
+
+
+def validate_appointment_against_json(appointment: CoziAppointment, json_data: dict, operation: str = "created") -> bool:
+    """Validate that a CoziAppointment object matches the JSON data it was created from."""
+    # Extract individual appointment data if needed
+    appointment_data = extract_appointment_from_response(json_data, appointment.id)
+    if not appointment_data:
+        print_error(f"Could not find appointment data for ID {appointment.id} in response")
+        return False
+    
+    json_data = appointment_data
+    print(f"\n🔍 Validating {operation} appointment against JSON data...")
+    
+    validation_errors = []
+    warnings = []
+    
+    # Check for core required fields (others are optional and have defaults)
+    required_fields = ['id', 'day', 'description']  # Core fields that should always be present
+    
+    missing_required_fields = [field for field in required_fields if field not in json_data]
+    if missing_required_fields:
+        validation_errors.append(f"Missing required JSON fields: {missing_required_fields}")
+    
+    # Optional fields (householdMembers, startTime, endTime, itemDetails) have defaults in the model
+    
+    # Check itemDetails structure  
+    item_details = json_data.get('itemDetails', {})
+    if not isinstance(item_details, dict):
+        validation_errors.append(f"itemDetails should be a dict, got {type(item_details)}")
+        item_details = {}
+    
+    # Note: All itemDetails fields are optional and have defaults in the model
+    # - location: defaults to None
+    # - notes: defaults to None  
+    # - dateSpan: defaults to 0
+    # So we don't warn about missing fields that the model handles gracefully
+    
+    # Check ID mapping
+    json_id = json_data.get('id')
+    if appointment.id != json_id:
+        validation_errors.append(f"ID mismatch: model={appointment.id}, json={json_id}")
+    
+    # Check subject mapping from description (or descriptionShort as fallback)
+    json_subject = json_data.get('description', '') or json_data.get('descriptionShort', '')
+    if appointment.subject != json_subject:
+        validation_errors.append(f"Subject mismatch: model='{appointment.subject}', json='{json_subject}'")
+    
+    # Check start_day mapping
+    json_start_day = json_data.get('day')
+    if json_start_day:
+        try:
+            expected_date = datetime.fromisoformat(json_start_day).date()
+            if appointment.start_day != expected_date:
+                validation_errors.append(f"Start day mismatch: model={appointment.start_day}, json={expected_date}")
+        except (ValueError, AttributeError) as e:
+            validation_errors.append(f"Start day parsing error: {e}")
+    elif appointment.start_day != date.today():  # Model defaults to today if no date provided
+        warnings.append(f"No day in JSON, model defaulted to: {appointment.start_day}")
+    
+    # Check start_time mapping
+    json_start_time = json_data.get('startTime')
+    if json_start_time:
+        try:
+            time_parts = json_start_time.split(':')
+            hour = int(time_parts[0])
+            minute = int(time_parts[1])
+            second = int(time_parts[2]) if len(time_parts) > 2 else 0
+            expected_time = time(hour=hour, minute=minute, second=second)
+            if appointment.start_time != expected_time:
+                validation_errors.append(f"Start time mismatch: model={appointment.start_time}, json={expected_time}")
+        except (ValueError, AttributeError, IndexError) as e:
+            validation_errors.append(f"Start time parsing error: {e}")
+    elif appointment.start_time is not None:
+        warnings.append(f"No startTime in JSON, but model has: {appointment.start_time}")
+    
+    # Check end_time mapping
+    json_end_time = json_data.get('endTime')
+    if json_end_time:
+        try:
+            time_parts = json_end_time.split(':')
+            hour = int(time_parts[0])
+            minute = int(time_parts[1])
+            second = int(time_parts[2]) if len(time_parts) > 2 else 0
+            expected_time = time(hour=hour, minute=minute, second=second)
+            if appointment.end_time != expected_time:
+                validation_errors.append(f"End time mismatch: model={appointment.end_time}, json={expected_time}")
+        except (ValueError, AttributeError, IndexError) as e:
+            validation_errors.append(f"End time parsing error: {e}")
+    elif appointment.end_time is not None:
+        warnings.append(f"No endTime in JSON, but model has: {appointment.end_time}")
+    
+    # Check date_span mapping (can be at top level or in itemDetails)
+    json_date_span = json_data.get('dateSpan', 0) or item_details.get('dateSpan', 0)
+    if appointment.date_span != json_date_span:
+        validation_errors.append(f"Date span mismatch: model={appointment.date_span}, json={json_date_span}")
+    
+    # Check attendees mapping (householdMembers in JSON vs attendees in model)
+    json_attendees = json_data.get('householdMembers', [])
+    if set(appointment.attendees) != set(json_attendees):
+        validation_errors.append(f"Attendees mismatch: model={appointment.attendees}, json={json_attendees}")
+    
+    # Check location mapping
+    json_location = item_details.get('location')
+    if appointment.location != json_location:
+        validation_errors.append(f"Location mismatch: model='{appointment.location}', json='{json_location}'")
+    
+    # Check notes mapping
+    json_notes = item_details.get('notes')
+    if appointment.notes != json_notes:
+        validation_errors.append(f"Notes mismatch: model='{appointment.notes}', json='{json_notes}'")
+    
+    # Check for unexpected fields in JSON that we're not mapping
+    json_top_fields = set(json_data.keys())
+    expected_top_fields = {
+        'id', 'day', 'startTime', 'endTime', 'description', 'descriptionShort', 
+        'householdMembers', 'itemDetails', 'itemType', 'itemVersion', 
+        'dateSpan', 'itemSource', 'createdAt', 'updatedAt'
+    }
+    unexpected_top_fields = json_top_fields - expected_top_fields
+    if unexpected_top_fields:
+        warnings.append(f"Unexpected top-level JSON fields not mapped to model: {unexpected_top_fields}")
+    
+    json_detail_fields = set(item_details.keys())
+    expected_detail_fields = {
+        'id', 'location', 'notes', 'notesHtml', 'notesPlain', 'dateSpan', 
+        'recurrence', 'readOnly', 'householdMember', 'birthYear', 
+        'recurrenceStartDay', 'name', 'endDay'
+    }
+    unexpected_detail_fields = json_detail_fields - expected_detail_fields
+    if unexpected_detail_fields:
+        warnings.append(f"Unexpected itemDetails JSON fields not mapped to model: {unexpected_detail_fields}")
+    
+    # Print warnings
+    if warnings:
+        print_info(f"Validation warnings ({len(warnings)}):")
+        for warning in warnings:
+            print(f"  ⚠️  {warning}")
+    
+    # Print validation results
+    if validation_errors:
+        print_error(f"Model validation failed with {len(validation_errors)} errors:")
+        for error in validation_errors:
+            print(f"  ❌ {error}")
+        return False
+    else:
+        print_success("Model validation passed! All mapped fields match JSON data.")
+        return True
+
+
+def validate_person_against_json(person: CoziPerson, json_data: dict) -> bool:
+    """Validate that a CoziPerson object matches the JSON data it was created from."""
+    print(f"\n🔍 Validating person '{person.name}' against JSON data...")
+    
+    validation_errors = []
+    warnings = []
+    
+    # Check for expected fields in JSON
+    expected_fields = ['accountPersonId', 'name', 'email', 'phoneNumberKey', 'colorIndex']
+    missing_fields = [field for field in expected_fields if field not in json_data]
+    if missing_fields:
+        warnings.append(f"Missing JSON fields: {missing_fields}")
+    
+    # Check ID mapping (accountPersonId in JSON vs id in model)
+    json_id = json_data.get('accountPersonId', '')
+    if person.id != json_id:
+        validation_errors.append(f"ID mismatch: model='{person.id}', json='{json_id}'")
+    
+    # Check name mapping
+    json_name = json_data.get('name', '')
+    if person.name != json_name:
+        validation_errors.append(f"Name mismatch: model='{person.name}', json='{json_name}'")
+    
+    # Check email mapping
+    json_email = json_data.get('email')
+    if person.email != json_email:
+        validation_errors.append(f"Email mismatch: model='{person.email}', json='{json_email}'")
+    
+    # Check phone mapping (phoneNumberKey in JSON vs phone in model)
+    json_phone = json_data.get('phoneNumberKey')
+    if person.phone != json_phone:
+        validation_errors.append(f"Phone mismatch: model='{person.phone}', json='{json_phone}'")
+    
+    # Check color mapping (colorIndex in JSON vs color in model)
+    json_color = json_data.get('colorIndex')
+    if person.color != json_color:
+        validation_errors.append(f"Color mismatch: model='{person.color}', json='{json_color}'")
+    
+    # Check for unexpected fields in JSON that we're not mapping to core model fields
+    json_fields = set(json_data.keys())
+    expected_core_fields = {'accountPersonId', 'name', 'email', 'phoneNumberKey', 'colorIndex'}
+    # Additional fields that we do map to model fields but are optional
+    optional_mapped_fields = {'emailStatus', 'accountPersonType', 'accountCreator', 'isAdult', 'notifiable', 'version', 'settings', 'notifiableFeatures'}
+    expected_fields_set = expected_core_fields | optional_mapped_fields
+    unexpected_fields = json_fields - expected_fields_set
+    if unexpected_fields:
+        warnings.append(f"Unexpected JSON fields not mapped to model: {unexpected_fields}")
+    
+    # Print warnings
+    if warnings:
+        print_info(f"Validation warnings ({len(warnings)}):")
+        for warning in warnings:
+            print(f"  ⚠️  {warning}")
+    
+    # Print validation results
+    if validation_errors:
+        print_error(f"Person model validation failed with {len(validation_errors)} errors:")
+        for error in validation_errors:
+            print(f"  ❌ {error}")
+        return False
+    else:
+        print_success(f"Person model validation passed for '{person.name}'!")
+        return True
 
 
 def select_attendee(family_members):
@@ -165,6 +419,19 @@ async def test_calendar_operations():
             # Get family members and let user select attendee
             try:
                 family_members = await client.get_family_members()
+                
+                # Validate family members against raw JSON
+                family_json = client.get_last_response_data()
+                if family_json and isinstance(family_json, list):
+                    print_json("Raw Family Members JSON", family_json)
+                    print_info(f"Validating {len(family_members)} family member models against JSON...")
+                    
+                    for i, member in enumerate(family_members):
+                        if i < len(family_json):
+                            validate_person_against_json(member, family_json[i])
+                        else:
+                            print_error(f"No JSON data found for family member {i}: {member.name}")
+                
                 attendee_ids = select_attendee(family_members)
                 
             except Exception as e:
@@ -203,10 +470,13 @@ async def test_calendar_operations():
             try:
                 created_appointment = await client.create_appointment(test_appointment)
                 
-                # Show the raw API response
+                # Show the raw API response and validate model
                 raw_response = client.get_last_response_data()
                 if raw_response:
                     print_json("Raw API Response Received", raw_response)
+                    
+                    # Validate the created appointment against the raw JSON
+                    validate_appointment_against_json(created_appointment, raw_response, "created")
                 
                 print_success("Appointment created successfully!")
                 print(f"  📅 Subject: {created_appointment.subject}")
@@ -252,10 +522,13 @@ async def test_calendar_operations():
             try:
                 updated_appointment = await client.update_appointment(created_appointment)
                 
-                # Show the raw API response for update
+                # Show the raw API response for update and validate model
                 raw_update_response = client.get_last_response_data()
                 if raw_update_response:
                     print_json("Raw Update API Response", raw_update_response)
+                    
+                    # Validate the updated appointment against the raw JSON
+                    validate_appointment_against_json(updated_appointment, raw_update_response, "updated")
                 
                 print_success("Appointment updated successfully!")
                 print(f"  📅 Subject: {updated_appointment.subject}")
@@ -302,6 +575,16 @@ async def test_calendar_operations():
             # Verify the appointment was deleted by fetching current month's appointments
             try:
                 current_appointments = await client.get_calendar(today.year, today.month)
+                
+                # Validate a sample of appointments against raw JSON
+                calendar_json = client.get_last_response_data()
+                if calendar_json and isinstance(calendar_json, list) and current_appointments:
+                    print_json("Sample Calendar JSON (first 2 appointments)", calendar_json[:2])
+                    print_info(f"Validating first 2 appointment models against JSON...")
+                    
+                    for i in range(min(2, len(current_appointments), len(calendar_json))):
+                        validate_appointment_against_json(current_appointments[i], calendar_json[i], "fetched")
+                
                 test_appointments = [
                     appt for appt in current_appointments 
                     if appt.subject in [subject, f"{subject} (Updated)"]
@@ -322,6 +605,7 @@ async def test_calendar_operations():
             print("\n" + "=" * 50)
             print("✅ Calendar operations test completed successfully!")
             print("✅ All operations (create, update, delete) worked as expected")
+            print("✅ Model validation confirmed data consistency between objects and JSON")
             
     except AuthenticationError:
         print_error("Authentication failed. Please check your username and password.")

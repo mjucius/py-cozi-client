@@ -27,7 +27,16 @@ class CoziPerson:
     name: str
     email: Optional[str] = None
     phone: Optional[str] = None
-    color: Optional[str] = None  # Color code for calendar events
+    color: Optional[int] = None  # Color index for calendar events
+    email_status: Optional[str] = None
+    is_adult: Optional[bool] = None
+    account_person_type: Optional[str] = None
+    account_creator: Optional[bool] = None
+    notifiable: Optional[bool] = None
+    version: Optional[int] = None
+    phone_number_key: Optional[str] = None
+    settings: Optional[Dict[str, Any]] = None
+    notifiable_features: Optional[List[str]] = None
     
     @classmethod
     def from_api_response(cls, data: Dict[str, Any]) -> 'CoziPerson':
@@ -36,8 +45,17 @@ class CoziPerson:
             id=data.get('accountPersonId', ''),
             name=data.get('name', ''),
             email=data.get('email'),
-            phone=data.get('phone'),
-            color=data.get('colorIndex')  # API uses colorIndex instead of color
+            phone=data.get('phoneNumberKey'),  # Map phoneNumberKey from JSON to phone field
+            color=data.get('colorIndex'),
+            email_status=data.get('emailStatus'),
+            is_adult=data.get('isAdult'),
+            account_person_type=data.get('accountPersonType'),
+            account_creator=data.get('accountCreator'),
+            notifiable=data.get('notifiable'),
+            version=data.get('version'),
+            phone_number_key=data.get('phoneNumberKey'),
+            settings=data.get('settings'),
+            notifiable_features=data.get('notifiableFeatures')
         )
 
 
@@ -48,6 +66,11 @@ class CoziItem:
     text: str
     status: ItemStatus
     position: Optional[int] = None
+    item_type: Optional[str] = None
+    due_date: Optional[date] = None
+    notes: Optional[str] = None
+    owner: Optional[str] = None
+    version: Optional[int] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
@@ -59,6 +82,11 @@ class CoziItem:
             text=data.get('text', ''),
             status=ItemStatus(data.get('status', 'incomplete')),
             position=data.get('position'),
+            item_type=data.get('itemType'),
+            due_date=cls._parse_date(data.get('dueDate')),
+            notes=data.get('notes'),
+            owner=data.get('owner'),
+            version=data.get('version'),
             created_at=cls._parse_datetime(data.get('createdAt')),
             updated_at=cls._parse_datetime(data.get('updatedAt'))
         )
@@ -72,6 +100,16 @@ class CoziItem:
             return datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
         except (ValueError, AttributeError):
             return None
+    
+    @staticmethod
+    def _parse_date(date_str: Optional[str]) -> Optional[date]:
+        """Parse date string from API response."""
+        if not date_str:
+            return None
+        try:
+            return datetime.fromisoformat(date_str).date()
+        except (ValueError, AttributeError):
+            return None
 
 
 @dataclass
@@ -83,6 +121,7 @@ class CoziList:
     items: List[CoziItem]
     owner: Optional[str] = None
     version: Optional[str] = None
+    notes: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
@@ -99,6 +138,7 @@ class CoziList:
             items=items,
             owner=data.get('owner'),
             version=data.get('version'),
+            notes=data.get('notes'),
             created_at=cls._parse_datetime(data.get('createdAt')),
             updated_at=cls._parse_datetime(data.get('updatedAt'))
         )
@@ -126,6 +166,19 @@ class CoziAppointment:
     attendees: List[str]  # List of person IDs
     location: Optional[str] = None
     notes: Optional[str] = None
+    notes_html: Optional[str] = None  # HTML formatted notes
+    notes_plain: Optional[str] = None  # Plain text notes (stripped of formatting)
+    item_type: Optional[str] = None  # appointment, birthday, etc.
+    item_version: Optional[int] = None
+    description_short: Optional[str] = None  # Shorter version of description
+    recurrence: Optional[Dict[str, Any]] = None  # Recurrence rules
+    recurrence_start_day: Optional[str] = None  # Start date for recurring items
+    end_day: Optional[str] = None  # End date for recurring items
+    read_only: Optional[bool] = None  # Whether item can be modified
+    item_source: Optional[str] = None  # Source of the item (e.g., "Holiday US - Cozi")
+    household_member: Optional[str] = None  # For birthdays
+    name: Optional[str] = None  # For birthdays
+    birth_year: Optional[int] = None  # For birthdays
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
@@ -184,18 +237,31 @@ class CoziAppointment:
     @classmethod
     def from_api_response(cls, data: Dict[str, Any]) -> 'CoziAppointment':
         """Create CoziAppointment from API response data."""
-        details = data.get('details', {})
+        item_details = data.get('itemDetails', {})
         
         return cls(
             id=data.get('id'),
-            subject=details.get('subject', ''),
-            start_day=cls._parse_date(data.get('startDay')),
-            start_time=cls._parse_time(details.get('startTime')),
-            end_time=cls._parse_time(details.get('endTime')),
-            date_span=details.get('dateSpan', 0),
-            attendees=details.get('attendeeSet', []),
-            location=details.get('location'),
-            notes=details.get('notes'),
+            subject=data.get('description', '') or data.get('descriptionShort', ''),
+            start_day=cls._parse_date(data.get('day')),
+            start_time=cls._parse_time(data.get('startTime')),
+            end_time=cls._parse_time(data.get('endTime')),
+            date_span=data.get('dateSpan', 0) or item_details.get('dateSpan', 0),
+            attendees=data.get('householdMembers', []),
+            location=item_details.get('location'),
+            notes=item_details.get('notes'),
+            notes_html=item_details.get('notesHtml'),
+            notes_plain=item_details.get('notesPlain'),
+            item_type=data.get('itemType'),
+            item_version=data.get('itemVersion'),
+            description_short=data.get('descriptionShort'),
+            recurrence=item_details.get('recurrence'),
+            recurrence_start_day=item_details.get('recurrenceStartDay'),
+            end_day=item_details.get('endDay') or item_details.get('recurrence', {}).get('endDay'),
+            read_only=item_details.get('readOnly'),
+            item_source=data.get('itemSource'),
+            household_member=item_details.get('householdMember'),
+            name=item_details.get('name'),
+            birth_year=item_details.get('birthYear'),
             created_at=cls._parse_datetime(data.get('createdAt')),
             updated_at=cls._parse_datetime(data.get('updatedAt'))
         )
@@ -216,9 +282,13 @@ class CoziAppointment:
         if not time_str:
             return None
         try:
-            hour, minute = map(int, time_str.split(':'))
-            return time(hour=hour, minute=minute)
-        except (ValueError, AttributeError):
+            # Handle both HH:MM and HH:MM:SS formats
+            time_parts = time_str.split(':')
+            hour = int(time_parts[0])
+            minute = int(time_parts[1])
+            second = int(time_parts[2]) if len(time_parts) > 2 else 0
+            return time(hour=hour, minute=minute, second=second)
+        except (ValueError, AttributeError, IndexError):
             return None
     
     @staticmethod
