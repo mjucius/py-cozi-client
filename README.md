@@ -1,6 +1,6 @@
 # py-cozi-client
 
-A Python client for the Cozi Family Organizer API that provides a robust and type-safe interface to the Cozi service.
+An unofficial Python client for the Cozi Family Organizer API that provides a robust and type-safe interface to the Cozi service.
 
 ## Features
 
