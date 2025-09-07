@@ -177,21 +177,6 @@ cd py-cozi-client
 pip install -e .[dev]
 ```
 
-### Running Tests
-```bash
-pytest
-```
-
-### Code Formatting
-```bash
-black .
-```
-
-### Type Checking
-```bash
-mypy .
-```
-
 ## Examples
 
 See the test files for comprehensive usage examples:

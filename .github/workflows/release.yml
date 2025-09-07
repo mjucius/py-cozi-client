@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 1.0.2)'
+        required: true
+        type: string
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build twine
+    
+    - name: Update version in pyproject.toml
+      run: |
+        sed -i "s/^version = .*/version = \"${{ github.event.inputs.version }}\"/" pyproject.toml
+    
+    - name: Update version in __init__.py
+      run: |
+        sed -i "s/__version__ = .*/__version__ = \"${{ github.event.inputs.version }}\"/" __init__.py
+    
+    - name: Commit version bump
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add pyproject.toml __init__.py
+        git commit -m "Bump version to ${{ github.event.inputs.version }}" || exit 0
+        git push
+    
+    - name: Build package
+      run: python -m build
+    
+    - name: Create GitHub Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ github.event.inputs.version }}
+        release_name: Release v${{ github.event.inputs.version }}
+        draft: false
+        prerelease: false
+        body: |
+          ## Changes in v${{ github.event.inputs.version }}
+          
+          See the [CHANGELOG.md](CHANGELOG.md) for details.
+          
+          ## Installation
+          
+          ```bash
+          pip install py-cozi-client==${{ github.event.inputs.version }}
+          ```
+    
+    - name: Upload Release Assets
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: dist/py_cozi_client-${{ github.event.inputs.version }}-py3-none-any.whl
+        asset_name: py_cozi_client-${{ github.event.inputs.version }}-py3-none-any.whl
+        asset_content_type: application/zip
+    
+    - name: Upload Source Distribution
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: dist/py_cozi_client-${{ github.event.inputs.version }}.tar.gz
+        asset_name: py_cozi_client-${{ github.event.inputs.version }}.tar.gz
+        asset_content_type: application/gzip
+    
+    - name: Publish to PyPI
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        password: ${{ secrets.PYPI_API_TOKEN }}
