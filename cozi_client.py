@@ -542,7 +542,18 @@ class CoziClient:
         response = await self._make_request("GET", endpoint)
         
         appointments = []
-        if isinstance(response, list):
+        if isinstance(response, dict) and "items" in response:
+            # New API format: response has 'days' and 'items' keys
+            items = response.get("items", {})
+            for item_id, item_data in items.items():
+                try:
+                    # Convert the new format to CoziAppointment
+                    appointment = self._parse_calendar_item(item_data)
+                    if appointment:
+                        appointments.append(appointment)
+                except Exception as e:
+                    logger.warning(f"Failed to parse appointment {item_id}: {e}")
+        elif isinstance(response, list):
             for appt_data in response:
                 try:
                     appointments.append(CoziAppointment.from_api_response(appt_data))
@@ -550,6 +561,65 @@ class CoziClient:
                     logger.warning(f"Failed to parse appointment: {e}")
         
         return appointments
+    
+    def _parse_calendar_item(self, item_data: Dict[str, Any]) -> Optional[CoziAppointment]:
+        try:
+            # Extract basic info
+            subject = item_data.get('description', '').strip()
+            if not subject:
+                subject = item_data.get('descriptionShort', '').strip()
+            
+            # Parse date
+            day_str = item_data.get('day', '')
+            try:
+                start_day = datetime.strptime(day_str, '%Y-%m-%d').date()
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid date format: {day_str}")
+                return None
+            
+            # Parse times
+            start_time = None
+            end_time = None
+            
+            start_time_str = item_data.get('startTime')
+            if start_time_str and start_time_str != '00:00:00':
+                try:
+                    hour, minute, second = map(int, start_time_str.split(':'))
+                    start_time = time(hour=hour, minute=minute)
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid start time format: {start_time_str}")
+            
+            end_time_str = item_data.get('endTime')
+            if end_time_str and end_time_str != '00:00:00':
+                try:
+                    hour, minute, second = map(int, end_time_str.split(':'))
+                    end_time = time(hour=hour, minute=minute)
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid end time format: {end_time_str}")
+            
+            # Extract other details
+            location = None
+            item_details = item_data.get('itemDetails', {})
+            if isinstance(item_details, dict):
+                location = item_details.get('location')
+            
+            attendees = item_data.get('householdMembers', [])
+            date_span = item_data.get('dateSpan', 0)
+            
+            return CoziAppointment(
+                id=item_data.get('id'),
+                subject=subject,
+                start_day=start_day,
+                start_time=start_time,
+                end_time=end_time,
+                date_span=date_span,
+                attendees=attendees,
+                location=location
+            )
+            
+        except Exception as e:
+            logger.error(f"Error parsing calendar item: {e}")
+            return None
     
     async def create_appointment(self, appointment: CoziAppointment) -> CoziAppointment:
         """

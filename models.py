@@ -129,6 +129,58 @@ class CoziAppointment:
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
+    @property
+    def start_date(self) -> date:
+        """Alias for start_day for compatibility."""
+        return self.start_day
+    
+    def to_api_create_format(self) -> Dict[str, Any]:
+        """Convert to API format for creating appointments."""
+        data = {
+            "itemType": "appointment",
+            "create": {
+                "description": self.subject,
+                "day": self.start_day.isoformat(),
+                "dateSpan": self.date_span,
+                "householdMembers": self.attendees if self.attendees else [],
+            }
+        }
+        
+        if self.start_time:
+            data["create"]["startTime"] = self.start_time.strftime("%H:%M:%S")
+        if self.end_time:
+            data["create"]["endTime"] = self.end_time.strftime("%H:%M:%S")
+        if self.location:
+            data["create"]["location"] = self.location
+        if self.notes:
+            data["create"]["notes"] = self.notes
+            
+        return data
+    
+    def to_api_edit_format(self) -> Dict[str, Any]:
+        """Convert to API format for editing appointments."""
+        data = {
+            "itemType": "appointment",
+            "edit": {
+                "id": self.id,
+                "description": self.subject,
+                "day": self.start_day.isoformat(),
+                "dateSpan": self.date_span,
+                "householdMembers": self.attendees if self.attendees else [],
+            }
+        }
+        
+        if self.start_time:
+            data["edit"]["startTime"] = self.start_time.strftime("%H:%M:%S")
+        if self.end_time:
+            data["edit"]["endTime"] = self.end_time.strftime("%H:%M:%S")
+        if self.location:
+            data["edit"]["location"] = self.location
+        if self.notes:
+            data["edit"]["notes"] = self.notes
+            
+        return data
+    
     @classmethod
     def from_api_response(cls, data: Dict[str, Any]) -> 'CoziAppointment':
         """Create CoziAppointment from API response data."""
