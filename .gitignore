@@ -175,3 +175,6 @@ Thumbs.db
 credentials.json
 config.json
 secrets.json
+
+# Claude Code
+CLAUDE.md
