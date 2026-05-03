@@ -29,16 +29,26 @@ classifiers = [
 ]
 dependencies = [
     "aiohttp>=3.9.2",
-    "pydantic>=1.10.0",
+    "pydantic>=2.0,<3.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=6.0",
-    "pytest-asyncio>=0.18.0",
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0",
+    "aioresponses>=0.7.4",
     "black>=22.0",
     "mypy>=0.950",
 ]
 
 [tool.setuptools]
 py-modules = ["cozi_client", "models", "utils", "exceptions"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-v --strict-markers"
+filterwarnings = [
+    "error",
+]

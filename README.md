@@ -198,6 +198,7 @@ class ItemStatus(Enum):
 - `APIError` - General API errors
 - `NetworkError` - Network connectivity issues
 - `ResourceNotFoundError` - Resource not found (404)
+- `PermissionDeniedError` - Access forbidden (403)
 
 ## Development
 
@@ -210,15 +211,26 @@ pip install -e .[dev]
 
 ## Examples
 
-See the test files for comprehensive usage examples:
-- `test_list_operations.py` - List and item management
-- `test_calendar_operations.py` - Calendar and appointment management
+End-to-end demo scripts live in `examples/` and exercise the client against the
+live Cozi API. They prompt for credentials (or read `COZI_USERNAME` /
+`COZI_PASSWORD`) and require an active Cozi account, so they are not run in CI.
+
+- `examples/demo_lists.py` - List and item management
+- `examples/demo_calendar.py` - Calendar and appointment management
+
+Automated unit tests live in `tests/` and run offline (HTTP mocked with
+`aioresponses`):
+
+```bash
+pip install -e .[dev]
+pytest
+```
 
 ## Requirements
 
 - Python 3.7+
 - aiohttp 3.9.2+
-- pydantic 1.10.0+
+- pydantic 2.0+
 
 ## License
 

@@ -20,6 +20,9 @@ from exceptions import (
     AuthenticationError,
     RateLimitError,
     APIError,
+    NetworkError,
+    ResourceNotFoundError,
+    PermissionDeniedError,
     ValidationError,
 )
 
@@ -36,5 +39,8 @@ __all__ = [
     "AuthenticationError",
     "RateLimitError",
     "APIError",
+    "NetworkError",
+    "ResourceNotFoundError",
+    "PermissionDeniedError",
     "ValidationError",
 ]

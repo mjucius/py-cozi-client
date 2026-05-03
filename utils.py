@@ -3,7 +3,7 @@ Utility functions for the Cozi API client.
 """
 
 import re
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import List, Optional, Tuple
 
 
@@ -147,6 +147,6 @@ def is_weekend(date_obj: date) -> bool:
 def get_week_boundaries(date_obj: date) -> Tuple[date, date]:
     """Get the start and end dates of the week containing the given date."""
     days_since_monday = date_obj.weekday()
-    week_start = date_obj - datetime.timedelta(days=days_since_monday)
-    week_end = week_start + datetime.timedelta(days=6)
+    week_start = date_obj - timedelta(days=days_since_monday)
+    week_end = week_start + timedelta(days=6)
     return week_start, week_end

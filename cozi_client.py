@@ -6,11 +6,13 @@ This module provides a comprehensive, async client for interacting with the Cozi
 
 import asyncio
 import logging
+import time as time_module
 from datetime import datetime, date, time
 from typing import List, Optional, Dict, Any, Union
 from urllib.parse import urljoin
 
 import aiohttp
+from pydantic import ValidationError as PydanticValidationError
 
 from exceptions import (
     CoziException,
@@ -19,6 +21,7 @@ from exceptions import (
     APIError,
     NetworkError,
     ResourceNotFoundError,
+    PermissionDeniedError,
     ValidationError,
 )
 from models import (
@@ -135,10 +138,10 @@ class CoziClient:
         self,
         method: str,
         endpoint: str,
-        data: Optional[Dict[str, Any]] = None,
+        data: Optional[Any] = None,
         params: Optional[Dict[str, str]] = None,
         require_auth: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> Union[Dict[str, Any], List[Any], bool]:
         """
         Make an authenticated API request with retry logic.
         
@@ -163,7 +166,7 @@ class CoziClient:
             logger.debug(f"After authenticate(). New account_id: {self._account_id}")
         
         # Rate limiting
-        now = asyncio.get_event_loop().time()
+        now = time_module.monotonic()
         time_since_last = now - self._last_request_time
         if time_since_last < self._min_request_interval:
             await asyncio.sleep(self._min_request_interval - time_since_last)
@@ -182,7 +185,7 @@ class CoziClient:
         
         for attempt in range(self.retry_attempts):
             try:
-                self._last_request_time = asyncio.get_event_loop().time()
+                self._last_request_time = time_module.monotonic()
                 
                 async with self._session.request(
                     method,
@@ -229,7 +232,7 @@ class CoziClient:
                                     response_data=response_data
                                 )
                         elif response.status == 403:
-                            raise ValidationError(
+                            raise PermissionDeniedError(
                                 "Access forbidden",
                                 status_code=response.status,
                                 response_data=response_data
@@ -250,6 +253,18 @@ class CoziClient:
                             else:
                                 raise RateLimitError(
                                     "API rate limit exceeded",
+                                    status_code=response.status,
+                                    response_data=response_data
+                                )
+                        elif 500 <= response.status < 600:
+                            if attempt < self.retry_attempts - 1:
+                                wait_time = (2 ** attempt) * 1.0
+                                logger.warning(f"Server error {response.status}, retrying in {wait_time}s")
+                                await asyncio.sleep(wait_time)
+                                continue
+                            else:
+                                raise APIError(
+                                    f"Server error: {response.status}",
                                     status_code=response.status,
                                     response_data=response_data
                                 )
@@ -304,7 +319,21 @@ class CoziClient:
         
         self._authenticated = True
         logger.info("Successfully authenticated with Cozi API")
-    
+
+    async def logout(self) -> None:
+        """
+        Clear local authentication state.
+
+        The Cozi auth API does not expose a server-side token revocation endpoint,
+        so this only clears in-process credentials. The next API call will
+        re-authenticate using the username/password supplied at construction time.
+        """
+        self._access_token = None
+        self._token_expires = None
+        self._account_id = None
+        self._authenticated = False
+        logger.info("Cleared local Cozi authentication state")
+
     # Account and Person Management
     
     async def get_family_members(self) -> List[CoziPerson]:
@@ -342,15 +371,16 @@ class CoziClient:
     async def get_lists_by_type(self, list_type: ListType) -> List[CoziList]:
         """
         Get lists filtered by type.
-        
+
         Args:
             list_type: Type of lists to retrieve
-        
+
         Returns:
             List of CoziList objects of the specified type
         """
         all_lists = await self.get_lists()
-        return [lst for lst in all_lists if lst.list_type == list_type]
+        # use_enum_values stores list_type as the string value, not the enum.
+        return [lst for lst in all_lists if lst.list_type == list_type.value]
     
     async def create_list(self, title: str, list_type: ListType) -> CoziList:
         """
@@ -551,15 +581,15 @@ class CoziClient:
                     appointment = self._parse_calendar_item(item_data)
                     if appointment:
                         appointments.append(appointment)
-                except Exception as e:
+                except (ValueError, TypeError, KeyError, PydanticValidationError) as e:
                     logger.warning(f"Failed to parse appointment {item_id}: {e}")
         elif isinstance(response, list):
             for appt_data in response:
                 try:
                     appointments.append(CoziAppointment.model_validate(appt_data))
-                except Exception as e:
+                except (ValueError, TypeError, KeyError, PydanticValidationError) as e:
                     logger.warning(f"Failed to parse appointment: {e}")
-        
+
         return appointments
     
     def _parse_calendar_item(self, item_data: Dict[str, Any]) -> Optional[CoziAppointment]:
@@ -617,27 +647,36 @@ class CoziClient:
                 'itemDetails': {'location': location} if location else {}
             }
             return CoziAppointment.model_validate(appointment_data)
-            
-        except Exception as e:
+
+        except (ValueError, TypeError, KeyError, PydanticValidationError) as e:
             logger.error(f"Error parsing calendar item: {e}")
             return None
     
     async def create_appointment(self, appointment: CoziAppointment) -> CoziAppointment:
         """
         Create a new calendar appointment.
-        
+
+        The Cozi API does not return a dedicated identifier for the new appointment;
+        we locate it in the calendar response by matching the start day and subject.
+        Two appointments created on the same day with the same subject cannot be
+        disambiguated — the first match wins.
+
         Args:
             appointment: CoziAppointment object to create
-        
+
         Returns:
-            Created CoziAppointment object
+            Created CoziAppointment object with id populated
+
+        Raises:
+            ValidationError: subject is empty
+            APIError: response did not contain the newly created appointment
         """
         if not appointment.subject.strip():
             raise ValidationError("Appointment subject cannot be empty")
-        
+
         year = appointment.start_day.year
         month = appointment.start_day.month
-        
+
         await self._ensure_authenticated()
         endpoint = f"/api/ext/{self.API_VERSION}/{self._account_id}/calendar/{year}/{month}"
         response = await self._make_request(
@@ -645,33 +684,30 @@ class CoziClient:
             endpoint,
             data=[appointment.to_api_create_format()]
         )
-        
+
         logger.debug(f"Create appointment response: {response}")
-        
-        # Handle the complex calendar response format
+
         if isinstance(response, dict):
-            # Look for our appointment in the items section
             items = response.get('items', {})
             target_date_str = appointment.start_day.isoformat()
-            
-            # Find the appointment by checking the items for our date and subject
+
             for item_id, item_data in items.items():
-                if (item_data.get('day') == target_date_str and 
+                if (item_data.get('day') == target_date_str and
                     item_data.get('description') == appointment.subject):
                     appointment.id = item_id
                     logger.info(f"Found created appointment with ID: {item_id}")
                     return appointment
-            
-            # If not found by date match, try to find the most recently created item with our subject
+
             for item_id, item_data in items.items():
                 if item_data.get('description') == appointment.subject:
                     appointment.id = item_id
                     logger.info(f"Found created appointment by subject match with ID: {item_id}")
                     return appointment
-        
-        # If no ID found, log the response for debugging
-        logger.warning(f"Could not find created appointment ID in response. Response keys: {list(response.keys()) if isinstance(response, dict) else 'Not a dict'}")
-        return appointment
+
+        raise APIError(
+            "Created appointment not found in server response",
+            response_data=response if isinstance(response, dict) else {"response": response},
+        )
     
     async def update_appointment(self, appointment: CoziAppointment) -> CoziAppointment:
         """

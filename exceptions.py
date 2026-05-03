@@ -44,6 +44,6 @@ class ResourceNotFoundError(APIError):
     pass
 
 
-class PermissionError(APIError):
-    """Raised when access to a resource is denied."""
+class PermissionDeniedError(APIError):
+    """Raised when access to a resource is denied (HTTP 403)."""
     pass
