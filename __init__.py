@@ -26,7 +26,7 @@ from exceptions import (
     ValidationError,
 )
 
-__version__ = "2.0.3"
+__version__ = "2.0.4"
 __all__ = [
     "CoziClient",
     "ListType",
