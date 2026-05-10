@@ -51,6 +51,24 @@ class CoziClient:
     BASE_URL = "https://rest.cozi.com"
     API_VERSION = "2004"
     AUTH_VERSION = "2207"
+    # Required by Cloudflare/Cozi as of 2026-04 — without this query param the
+    # login endpoint returns 401. Discovered upstream in Wetzel402/py-cozi PR #3
+    # by capturing traffic from the live my.cozi.com web client. Any
+    # "coziwc|vNNN_production" value is accepted; the live web bundle currently
+    # ships v257_production.
+    APIKEY = "coziwc|v251_production"
+    # Browser-like headers to satisfy Cloudflare's bot detection on rest.cozi.com.
+    # Without these, requests from server environments (Smithery, CI) get 401
+    # at the auth layer even with correct credentials.
+    BROWSER_HEADERS = {
+        "Origin": "https://my.cozi.com",
+        "Referer": "https://my.cozi.com/",
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/130.0 Safari/537.36"
+        ),
+    }
     
     def __init__(
         self,
@@ -172,7 +190,9 @@ class CoziClient:
             await asyncio.sleep(self._min_request_interval - time_since_last)
         
         url = urljoin(self.BASE_URL, endpoint)
-        headers = self._get_auth_headers() if require_auth else {}
+        headers = dict(self.BROWSER_HEADERS)
+        if require_auth:
+            headers.update(self._get_auth_headers())
         logger.debug(f"Making request to: {url} (account_id: {self._account_id})")
         
         # Store request data for debugging (excluding sensitive auth headers)
@@ -303,6 +323,7 @@ class CoziClient:
                 "password": self.password,
                 "issueRefresh": True,
             },
+            params={"apikey": self.APIKEY},
             require_auth=False
         )
         
