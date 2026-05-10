@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.4] - 2026-05-10
+
+### Changed
+
+- **Bumped `softprops/action-gh-release` from `@v2` to `@v3`** in the release
+  workflow. The v2 tag still runs on Node 20, so the 2.0.3 run emitted one
+  residual Node 20 deprecation warning for this action; v3 moves it onto
+  Node 24. No runtime behavior changed.
+
 ## [2.0.3] - 2026-05-10
 
 ### Changed
