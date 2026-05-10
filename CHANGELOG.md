@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.3] - 2026-05-10
+
+### Changed
+
+- **Modernized the release workflow** (`.github/workflows/release.yml`) to
+  silence GitHub-emitted deprecation warnings. Bumped `actions/checkout` to
+  `@v5` and `actions/setup-python` to `@v6` so the workflow runs on Node 24
+  ahead of the June 2, 2026 forced cutover. Replaced the archived
+  `actions/create-release@v1` and `actions/upload-release-asset@v1` (which
+  also triggered repeated `set-output` deprecation warnings) with a single
+  `softprops/action-gh-release@v2` step that both creates the release and
+  attaches the wheel and source distribution. No runtime behavior changed;
+  this release exists to validate the new pipeline end-to-end.
+
 ## [2.0.2] - 2026-05-10
 
 ### Fixed

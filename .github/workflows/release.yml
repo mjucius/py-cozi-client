@@ -17,13 +17,13 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
       with:
         fetch-depth: 0
         token: ${{ secrets.GITHUB_TOKEN }}
-    
+
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v6
       with:
         python-version: '3.11'
 
@@ -58,46 +58,26 @@ jobs:
       run: python -m build
     
     - name: Create GitHub Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      uses: softprops/action-gh-release@v2
       with:
         tag_name: v${{ github.event.inputs.version }}
-        release_name: Release v${{ github.event.inputs.version }}
+        name: Release v${{ github.event.inputs.version }}
         draft: false
         prerelease: false
+        files: |
+          dist/py_cozi_client-${{ github.event.inputs.version }}-py3-none-any.whl
+          dist/py_cozi_client-${{ github.event.inputs.version }}.tar.gz
         body: |
           ## Changes in v${{ github.event.inputs.version }}
-          
+
           See the [CHANGELOG.md](CHANGELOG.md) for details.
-          
+
           ## Installation
-          
+
           ```bash
           pip install py-cozi-client==${{ github.event.inputs.version }}
           ```
-    
-    - name: Upload Release Assets
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: dist/py_cozi_client-${{ github.event.inputs.version }}-py3-none-any.whl
-        asset_name: py_cozi_client-${{ github.event.inputs.version }}-py3-none-any.whl
-        asset_content_type: application/zip
-    
-    - name: Upload Source Distribution
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: dist/py_cozi_client-${{ github.event.inputs.version }}.tar.gz
-        asset_name: py_cozi_client-${{ github.event.inputs.version }}.tar.gz
-        asset_content_type: application/gzip
-    
+
     - name: Publish to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
       with:
