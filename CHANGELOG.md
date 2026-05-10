@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.2] - 2026-05-10
+
+### Fixed
+
+- **Appointment notes now round-trip from `get_calendar`.** Cozi returns
+  appointment notes inside `itemDetails.notes`, not at the top level of the
+  calendar item payload. `_parse_calendar_item` was synthesizing a new
+  `itemDetails` containing only `location`, which silently dropped the notes
+  field before `CoziAppointment.extract_item_details` had a chance to hoist
+  it. Now the full `itemDetails` dict is preserved so the model validator can
+  hoist `notes`, `location`, and any other nested fields. Discovered while
+  smoke-testing the v2.0.1 auth fix against real appointment data.
+
 ## [2.0.1] - 2026-05-10
 
 ### Fixed

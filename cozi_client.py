@@ -648,15 +648,16 @@ class CoziClient:
                 except (ValueError, TypeError):
                     logger.warning(f"Invalid end time format: {end_time_str}")
             
-            # Extract other details
-            location = None
+            # Preserve the full itemDetails dict so CoziAppointment.extract_item_details
+            # can hoist nested fields (location, notes, …) into top-level attributes.
+            # Previously this synthesized {'location': ...} and silently dropped notes.
             item_details = item_data.get('itemDetails', {})
-            if isinstance(item_details, dict):
-                location = item_details.get('location')
-            
+            if not isinstance(item_details, dict):
+                item_details = {}
+
             attendees = item_data.get('householdMembers', [])
             date_span = item_data.get('dateSpan', 0)
-            
+
             appointment_data = {
                 'id': item_data.get('id'),
                 'description': subject,
@@ -665,7 +666,7 @@ class CoziClient:
                 'endTime': end_time.strftime('%H:%M:%S') if end_time else None,
                 'dateSpan': date_span,
                 'householdMembers': attendees,
-                'itemDetails': {'location': location} if location else {}
+                'itemDetails': item_details,
             }
             return CoziAppointment.model_validate(appointment_data)
 
