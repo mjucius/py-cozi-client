@@ -170,11 +170,18 @@ ehthumbs.db
 Thumbs.db
 
 # Credentials and sensitive data
+# *.env catches creds.env and friends, matching cozi_mcp's .gitignore. The bare
+# .env rule further up does not cover a prefixed name, so live-account testing
+# credentials would otherwise be committable.
+*.env
 .env.local
 .env.*.local
+creds.env
 credentials.json
 config.json
 secrets.json
+*.pem
+*.key
 
 # Claude Code
 CLAUDE.md
