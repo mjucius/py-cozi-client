@@ -38,6 +38,16 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0",
     "aioresponses>=0.7.4",
+    # Test-only ceiling, deliberately NOT applied to the runtime dependency
+    # above. aiohttp 3.14 made `stream_writer` a required keyword argument of
+    # ClientResponse.__init__; aioresponses constructs ClientResponse itself and
+    # has not caught up as of 0.7.9, so every mocked request raises TypeError.
+    # The library itself is unaffected -- verified on aiohttp 3.14.3 against a
+    # real aiohttp server: authenticate, get_lists, add_item and
+    # update_item_text all pass. Only the test double is broken, so users are
+    # left free to install the newest aiohttp. Drop this once aioresponses
+    # supports 3.14.
+    "aiohttp<3.14",
     "black>=22.0",
     "mypy>=0.950",
 ]
