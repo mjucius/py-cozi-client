@@ -8,7 +8,7 @@ import asyncio
 import logging
 import time as time_module
 from datetime import datetime, date, time
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Tuple, Union
 from urllib.parse import urljoin
 
 import aiohttp
@@ -23,6 +23,7 @@ from exceptions import (
     ResourceNotFoundError,
     PermissionDeniedError,
     ValidationError,
+    WriteVerificationError,
 )
 from models import (
     ListType,
@@ -34,6 +35,65 @@ from models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Methods that are safe to replay after a network error or 5xx.
+#
+# POST/PUT/PATCH are excluded: Cozi applies them server-side before the failure
+# surfaces here, so a blind replay can double-apply the write (two appointments,
+# a duplicated item). Retrying those safely would need idempotency keys the API
+# does not offer. 401 and 429 are still retried for every method — both are
+# rejections issued before the request was applied, so no partial write can have
+# landed.
+IDEMPOTENT_METHODS = frozenset({"GET", "DELETE", "HEAD", "OPTIONS"})
+
+
+def _assert_not_rejected(
+    response: Any, operation: str, appointment_id: Optional[str] = None
+) -> None:
+    """
+    Raise if Cozi discarded a calendar operation.
+
+    The calendar endpoint answers HTTP 200 even when it refuses an operation,
+    naming the reason only in a ``rejectedItems`` array. Verified against live
+    Cozi 2026-07-24 — e.g. an edit carrying an unexpected attribute comes back as::
+
+        {"rejectedItems": [{"operation": "edit", "id": "...",
+          "error": "Operation rejected due to request data problem. Detail:
+                    Unexpected attribute 'item_version' for AppointmentResource"}]}
+
+    while the object the caller holds still looks perfectly correct. Without this
+    check a discarded write is indistinguishable from a real one.
+    """
+    if not isinstance(response, dict):
+        return
+
+    rejected = response.get("rejectedItems")
+    if not isinstance(rejected, list) or not rejected:
+        return
+
+    if appointment_id:
+        # A rejection with no id is unattributable, so treat it as ours rather
+        # than discarding it silently.
+        mine = [
+            r
+            for r in rejected
+            if isinstance(r, dict) and r.get("id") in (None, appointment_id)
+        ]
+    else:
+        mine = rejected
+    if not mine:
+        return
+
+    reasons = "; ".join(
+        r.get("error") if isinstance(r, dict) and isinstance(r.get("error"), str)
+        else "no reason given"
+        for r in mine
+    )
+    target = f" for appointment {appointment_id}" if appointment_id else ""
+    raise WriteVerificationError(
+        f"Cozi rejected the {operation} operation{target}: {reasons}",
+        response_data=response,
+    )
 
 
 class CoziClient:
@@ -162,19 +222,44 @@ class CoziClient:
     ) -> Union[Dict[str, Any], List[Any], bool]:
         """
         Make an authenticated API request with retry logic.
-        
+
         Args:
             method: HTTP method
             endpoint: API endpoint (without base URL)
             data: JSON data to send
             params: Query parameters
             require_auth: Whether authentication is required
-        
+
         Returns:
             JSON response data
-        
+
         Raises:
             Various CoziException subclasses based on error type
+        """
+        _, response_data = await self._make_request_with_status(
+            method, endpoint, data=data, params=params, require_auth=require_auth
+        )
+        return response_data
+
+    async def _make_request_with_status(
+        self,
+        method: str,
+        endpoint: str,
+        data: Optional[Any] = None,
+        params: Optional[Dict[str, str]] = None,
+        require_auth: bool = True,
+    ) -> Tuple[int, Union[Dict[str, Any], List[Any], bool]]:
+        """
+        Same as :meth:`_make_request`, but also returns the HTTP status code.
+
+        Needed where 200 and 201 mean materially different things. Updating a list
+        item is the case in point: Cozi answers 200 when it updated an existing item
+        and 201 when the id did not exist and it *created* one instead. The response
+        bodies are identical, so the status is the only way to tell an update from
+        an accidental insert.
+
+        Returns:
+            (status_code, JSON response data)
         """
         await self._ensure_session()
         
@@ -193,6 +278,7 @@ class CoziClient:
         headers = dict(self.BROWSER_HEADERS)
         if require_auth:
             headers.update(self._get_auth_headers())
+        retriable = method.upper() in IDEMPOTENT_METHODS
         logger.debug(f"Making request to: {url} (account_id: {self._account_id})")
         
         # Store request data for debugging (excluding sensitive auth headers)
@@ -219,13 +305,13 @@ class CoziClient:
                         response_data = await response.json()
                         self._last_response_data = response_data
                         logger.debug(f"API request successful: {method} {endpoint} (status: {response.status})")
-                        return response_data
-                    
+                        return response.status, response_data
+
                     # Handle successful responses with no content (204)
                     elif response.status == 204:
                         self._last_response_data = None
                         logger.debug(f"API request successful: {method} {endpoint} (status: {response.status}, no content)")
-                        return True  # Return True to indicate successful operation
+                        return response.status, True  # True indicates successful operation
                     
                     # Handle error responses - parse JSON for all error cases
                     else:
@@ -239,11 +325,15 @@ class CoziClient:
                         
                         if response.status == 401:
                             if attempt == 0 and require_auth:
-                                # Try re-authenticating once
+                                # Safe to replay for any method: a 401 is issued
+                                # before the request is applied, so no partial
+                                # write can have landed.
                                 logger.info("Authentication failed, retrying login")
                                 self._authenticated = False
                                 await self.authenticate()
-                                headers = self._get_auth_headers()
+                                # update(), not assignment: BROWSER_HEADERS must
+                                # survive or Cloudflare 401s the retry as well.
+                                headers.update(self._get_auth_headers())
                                 continue
                             else:
                                 raise AuthenticationError(
@@ -264,6 +354,8 @@ class CoziClient:
                                 response_data=response_data
                             )
                         elif response.status == 429:
+                            # Also safe to replay for any method — rejected before
+                            # it was applied.
                             if attempt < self.retry_attempts - 1:
                                 # Exponential backoff for rate limiting
                                 wait_time = (2 ** attempt) * 1.0
@@ -277,7 +369,7 @@ class CoziClient:
                                     response_data=response_data
                                 )
                         elif 500 <= response.status < 600:
-                            if attempt < self.retry_attempts - 1:
+                            if retriable and attempt < self.retry_attempts - 1:
                                 wait_time = (2 ** attempt) * 1.0
                                 logger.warning(f"Server error {response.status}, retrying in {wait_time}s")
                                 await asyncio.sleep(wait_time)
@@ -296,7 +388,7 @@ class CoziClient:
                             )
             
             except aiohttp.ClientError as e:
-                if attempt < self.retry_attempts - 1:
+                if retriable and attempt < self.retry_attempts - 1:
                     wait_time = (2 ** attempt) * 0.5
                     logger.warning(f"Network error, retrying in {wait_time}s: {e}")
                     await asyncio.sleep(wait_time)
@@ -327,17 +419,37 @@ class CoziClient:
             require_auth=False
         )
         
-        logger.debug(f"Authentication response: {response}")
-        
+        # Deliberately not logged in full: the login response carries the access
+        # token and refresh token, and debug logs routinely end up in bug reports.
+        logger.debug(
+            "Authentication response keys: %s",
+            sorted(response) if isinstance(response, dict) else type(response).__name__,
+        )
+        if not isinstance(response, dict):
+            raise AuthenticationError(
+                f"Invalid login response: expected an object, got {type(response).__name__}"
+            )
+
         self._access_token = response.get("accessToken")
         self._token_expires = response.get("expiresIn")
         self._account_id = response.get("accountId")
-        
+
         logger.debug(f"Parsed auth data - token: {self._access_token is not None}, account_id: {self._account_id}")
-        
+
         if not all([self._access_token, self._account_id]):
-            raise AuthenticationError(f"Invalid login response format. Response: {response}")
-        
+            # Name the missing field only — echoing the response back would leak
+            # any credential material it did contain into the exception message.
+            missing = " and ".join(
+                name
+                for name, value in (
+                    ("accessToken", self._access_token),
+                    ("accountId", self._account_id),
+                )
+                if not value
+            )
+            raise AuthenticationError(f"Invalid login response: missing {missing}")
+
+
         self._authenticated = True
         logger.info("Successfully authenticated with Cozi API")
 
@@ -509,48 +621,106 @@ class CoziClient:
             endpoint,
             data={"text": text, "position": position}
         )
-        
+
+        item = CoziItem.model_validate(response)
+        if item.text != text or not item.id:
+            detail = "" if item.id else " with no id"
+            raise WriteVerificationError(
+                f"Cozi did not apply the item creation: asked for text {text!r}, "
+                f"server returned {item.text!r}{detail}",
+                response_data=response if isinstance(response, dict) else None,
+            )
+        return item
+
+    async def _put_item(
+        self, list_id: str, item_id: str, data: Dict[str, Any]
+    ) -> CoziItem:
+        """
+        PUT an item, rejecting the case where Cozi *created* it instead of updating.
+
+        Verified against live Cozi 2026-07-24 via the parallel TypeScript client in
+        cozi_mcp: a PUT to an item id that does not exist answers 201 and persists a
+        brand-new item under that exact id — an upsert, not an error. A stale or
+        mistyped id would therefore silently add a phantom item to the user's list
+        rather than failing. 200 vs 201 is the only signal; the bodies are identical.
+
+        On 201 the phantom is deleted before raising, so a failed update leaves no
+        residue. If that cleanup itself fails the original error still surfaces —
+        losing it to report a cleanup problem would be worse — noting that the item
+        may remain.
+        """
+        await self._ensure_authenticated()
+        endpoint = f"/api/ext/{self.API_VERSION}/{self._account_id}/list/{list_id}/item/{item_id}"
+        status, response = await self._make_request_with_status("PUT", endpoint, data=data)
+
+        if status == 201:
+            try:
+                await self.remove_items(list_id, [item_id])
+                cleanup = " The phantom item was removed."
+            except CoziException as e:
+                logger.warning(f"Failed to clean up phantom item {item_id}: {e}")
+                cleanup = " The phantom item could NOT be removed and may still be in the list."
+            raise ResourceNotFoundError(
+                f"Item {item_id} does not exist in list {list_id}; Cozi created a "
+                f"new item instead of updating it.{cleanup}",
+                status_code=status,
+            )
+
         return CoziItem.model_validate(response)
-    
+
     async def update_item_text(self, list_id: str, item_id: str, text: str) -> CoziItem:
         """
         Update the text of a list item.
-        
+
         Args:
             list_id: ID of the list containing the item
             item_id: ID of the item to update
             text: New item text
-        
+
         Returns:
             Updated CoziItem object
+
+        Raises:
+            ResourceNotFoundError: item_id does not exist (Cozi upserted instead)
+            WriteVerificationError: server did not apply the new text
         """
         if not text.strip():
             raise ValidationError("Item text cannot be empty")
-        
-        await self._ensure_authenticated()
-        endpoint = f"/api/ext/{self.API_VERSION}/{self._account_id}/list/{list_id}/item/{item_id}"
-        response = await self._make_request("PUT", endpoint, data={"text": text})
-        
-        return CoziItem.model_validate(response)
-    
+
+        item = await self._put_item(list_id, item_id, {"text": text})
+        if item.text != text:
+            raise WriteVerificationError(
+                f"Cozi did not apply the text update: asked for {text!r}, "
+                f"server returned {item.text!r}"
+            )
+        return item
+
     async def mark_item(self, list_id: str, item_id: str, status: ItemStatus) -> CoziItem:
         """
         Mark an item as complete or incomplete.
-        
+
         Args:
             list_id: ID of the list containing the item
             item_id: ID of the item to update
             status: New status for the item
-        
+
         Returns:
             Updated CoziItem object
+
+        Raises:
+            ResourceNotFoundError: item_id does not exist (Cozi upserted instead)
+            WriteVerificationError: server did not apply the new status
         """
-        await self._ensure_authenticated()
-        endpoint = f"/api/ext/{self.API_VERSION}/{self._account_id}/list/{list_id}/item/{item_id}"
-        response = await self._make_request("PUT", endpoint, data={"status": status.value})
-        
-        return CoziItem.model_validate(response)
-    
+        item = await self._put_item(list_id, item_id, {"status": status.value})
+        # use_enum_values=True means item.status is the plain string value.
+        if item.status != status.value:
+            raise WriteVerificationError(
+                f"Cozi did not apply the status update: asked for {status.value!r}, "
+                f"server returned {item.status!r}"
+            )
+        return item
+
+
     async def remove_items(self, list_id: str, item_ids: List[str]) -> bool:
         """
         Remove multiple items from a list.
@@ -561,15 +731,36 @@ class CoziClient:
         
         Returns:
             True if removal was successful
+
+        Raises:
+            WriteVerificationError: one or more items survived the removal
         """
         if not item_ids:
             return True
-        
+
         await self._ensure_authenticated()
         endpoint = f"/api/ext/{self.API_VERSION}/{self._account_id}/list/{list_id}"
         operations = [{"op": "remove", "path": f"/items/{item_id}"} for item_id in item_ids]
-        
-        await self._make_request("PATCH", endpoint, data={"operations": operations})
+
+        response = await self._make_request("PATCH", endpoint, data={"operations": operations})
+
+        # The PATCH response is the full post-state of the list, so the removal can
+        # be confirmed without a second round trip. Cozi tolerates removing an id
+        # that was never there (200, list unchanged) — that still satisfies "it is
+        # not there", so only surviving ids are an error.
+        if isinstance(response, dict) and isinstance(response.get("items"), list):
+            remaining = {
+                item.get("itemId") or item.get("id")
+                for item in response["items"]
+                if isinstance(item, dict)
+            }
+            survived = [item_id for item_id in item_ids if item_id in remaining]
+            if survived:
+                raise WriteVerificationError(
+                    f"Cozi did not remove {len(survived)} of {len(item_ids)} item(s) "
+                    f"from list {list_id}: {', '.join(survived)}",
+                    response_data=response,
+                )
         return True
     
     # Calendar Management
@@ -708,6 +899,7 @@ class CoziClient:
         )
 
         logger.debug(f"Create appointment response: {response}")
+        _assert_not_rejected(response, "create")
 
         if isinstance(response, dict):
             items = response.get('items', {})
@@ -740,13 +932,17 @@ class CoziClient:
         
         Returns:
             Updated CoziAppointment object
+
+        Raises:
+            ValidationError: appointment has no ID
+            WriteVerificationError: Cozi discarded the edit
         """
         if not appointment.id:
             raise ValidationError("Cannot update appointment without ID")
-        
+
         year = appointment.start_day.year
         month = appointment.start_day.month
-        
+
         await self._ensure_authenticated()
         endpoint = f"/api/ext/{self.API_VERSION}/{self._account_id}/calendar/{year}/{month}"
         response = await self._make_request(
@@ -754,9 +950,10 @@ class CoziClient:
             endpoint,
             data=[appointment.to_api_edit_format()]
         )
-        
+
         logger.debug(f"Update appointment response: {response}")
-        
+        _assert_not_rejected(response, "edit", appointment.id)
+
         # Return the updated appointment (API may not return detailed response)
         return appointment
     
@@ -771,6 +968,9 @@ class CoziClient:
         
         Returns:
             True if deletion was successful
+
+        Raises:
+            WriteVerificationError: Cozi refused the delete
         """
         await self._ensure_authenticated()
         endpoint = f"/api/ext/{self.API_VERSION}/{self._account_id}/calendar/{year}/{month}"
@@ -778,6 +978,9 @@ class CoziClient:
             "itemType": "appointment",
             "delete": {"id": appointment_id}
         }]
-        
-        await self._make_request("POST", endpoint, data=delete_data)
+
+        response = await self._make_request("POST", endpoint, data=delete_data)
+        # Cozi treats deleting an unknown id as a no-op success (no rejection), so
+        # this catches malformed or refused deletes, not "it was already gone".
+        _assert_not_rejected(response, "delete", appointment_id)
         return True

@@ -47,3 +47,15 @@ class ResourceNotFoundError(APIError):
 class PermissionDeniedError(APIError):
     """Raised when access to a resource is denied (HTTP 403)."""
     pass
+
+
+class WriteVerificationError(APIError):
+    """
+    Raised when a write returned a success status but the server did not apply it.
+
+    Cozi's calendar endpoint answers 200 even when it discards an operation,
+    reporting the reason only in a ``rejectedItems`` array in the response body.
+    Without an explicit check a discarded write is indistinguishable from a
+    successful one, so the caller reports success that never happened.
+    """
+    pass

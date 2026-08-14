@@ -24,6 +24,7 @@ from exceptions import (
     ResourceNotFoundError,
     PermissionDeniedError,
     ValidationError,
+    WriteVerificationError,
 )
 
 __version__ = "2.0.4"
@@ -43,4 +44,5 @@ __all__ = [
     "ResourceNotFoundError",
     "PermissionDeniedError",
     "ValidationError",
+    "WriteVerificationError",
 ]

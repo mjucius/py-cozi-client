@@ -185,3 +185,79 @@ class TestCoziAppointment:
         out = appt.to_api_create_format()
         assert out["create"]["details"]["startTime"] is None
         assert out["create"]["details"]["endTime"] is None
+
+class TestRecurrencePreservation:
+    """
+    Cozi's calendar edit is a full replace, so a recurrence rule that isn't
+    re-sent is erased and the series collapses to a single appointment.
+    Wire shape verified against the live Cozi web client (see
+    CoziAppointment.to_api_edit_format).
+    """
+
+    RULE = {
+        "rules": [
+            {"frequency": "Weekly", "interval": 1, "byDay": ["FR"], "end": {}}
+        ],
+        "endDay": "2026-12-31",
+    }
+
+    def _recurring(self, **overrides):
+        data = {
+            "id": "a1",
+            "description": "Soccer practice",
+            "day": "2026-05-02",
+            "startTime": "14:30:00",
+            "endTime": "15:30:00",
+            "itemDetails": {
+                "recurrence": self.RULE,
+                "recurrenceStartDay": "2026-01-02",
+                "notes": "bring cleats",
+            },
+        }
+        data.update(overrides)
+        return CoziAppointment.model_validate(data)
+
+    def test_recurrence_parsed_from_item_details(self):
+        # A GET nests recurrence under itemDetails; it must be hoisted.
+        appt = self._recurring()
+        assert appt.recurrence == self.RULE
+        assert appt.recurrence_start_day == "2026-01-02"
+
+    def test_edit_preserves_recurrence(self):
+        out = self._recurring().to_api_edit_format()
+        assert out["edit"]["recurrence"] == self.RULE
+
+    def test_recurrence_is_sibling_of_details_not_nested(self):
+        # The asymmetry that breaks series: an edit wants recurrence at the edit
+        # level. Nested inside `details` it is ignored and the rule is unset.
+        out = self._recurring().to_api_edit_format()
+        assert "recurrence" in out["edit"]
+        assert "recurrence" not in out["edit"]["details"]
+
+    def test_edit_never_sends_item_version(self):
+        # Including itemVersion makes Cozi silently discard the whole edit.
+        appt = self._recurring(itemVersion=7)
+        assert appt.item_version == 7
+        out = appt.to_api_edit_format()
+        assert "itemVersion" not in out["edit"]
+        assert "itemVersion" not in out["edit"]["details"]
+
+    def test_end_day_rides_inside_recurrence(self):
+        # endDay is not a top-level field; it round-trips within recurrence.
+        out = self._recurring().to_api_edit_format()
+        assert out["edit"]["recurrence"]["endDay"] == "2026-12-31"
+
+    def test_edit_omits_recurrence_for_one_off(self):
+        appt = CoziAppointment.model_validate(
+            {"id": "a1", "description": "Dentist", "day": "2026-05-02"}
+        )
+        out = appt.to_api_edit_format()
+        assert "recurrence" not in out["edit"]
+
+    def test_unrelated_edit_keeps_the_series(self):
+        # The regression this guards: changing notes must not strip the schedule.
+        appt = self._recurring()
+        appt.notes = "bring cleats and water"
+        out = appt.to_api_edit_format()
+        assert out["edit"]["details"]["notes"] == "bring cleats and water"
+        assert out["edit"]["recurrence"] == self.RULE

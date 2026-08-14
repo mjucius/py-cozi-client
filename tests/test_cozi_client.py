@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import aiohttp
 import pytest
+from yarl import URL
 from aioresponses import aioresponses
 
 from cozi_client import CoziClient
@@ -19,6 +20,7 @@ from exceptions import (
     RateLimitError,
     ResourceNotFoundError,
     ValidationError,
+    WriteVerificationError,
 )
 from models import CoziAppointment, ItemStatus, ListType
 from tests.conftest import (
@@ -401,3 +403,274 @@ class TestCalendar:
     async def test_delete_appointment(self, client, mocked):
         mocked.post(_api("/calendar/2026/5"), payload={"items": {}})
         assert await client.delete_appointment("a1", 2026, 5) is True
+
+
+# ---------------------------------------------------------------------------
+# Write verification and retry safety
+#
+# These cover behaviours proven against live Cozi via the parallel TypeScript
+# client in cozi_mcp (commit 329f8a6): the calendar endpoint answers 200 while
+# discarding a write, a PUT to an unknown item id upserts instead of erroring,
+# and a replayed non-idempotent request double-applies.
+# ---------------------------------------------------------------------------
+
+
+class TestRejectedItems:
+    """Cozi reports refused calendar operations in `rejectedItems`, not the status."""
+
+    REJECTION = {
+        "items": {},
+        "rejectedItems": [
+            {
+                "operation": "edit",
+                "id": "a1",
+                "error": (
+                    "Operation rejected due to request data problem. Detail: "
+                    "Unexpected attribute 'item_version' for AppointmentResource"
+                ),
+            }
+        ],
+    }
+
+    def _appt(self):
+        return CoziAppointment.model_validate(
+            {"id": "a1", "description": "Soccer", "day": "2026-05-02"}
+        )
+
+    async def test_update_raises_on_rejection(self, client, mocked):
+        mocked.post(_api("/calendar/2026/5"), payload=self.REJECTION)
+        with pytest.raises(WriteVerificationError) as exc:
+            await client.update_appointment(self._appt())
+        assert "Unexpected attribute" in str(exc.value)
+        assert "a1" in str(exc.value)
+
+    async def test_rejection_for_another_id_is_ignored(self, client, mocked):
+        payload = {"items": {}, "rejectedItems": [{"id": "other", "error": "nope"}]}
+        mocked.post(_api("/calendar/2026/5"), payload=payload)
+        # Our edit was not the one refused, so it must not raise.
+        result = await client.update_appointment(self._appt())
+        assert result.id == "a1"
+
+    async def test_unattributed_rejection_is_ours(self, client, mocked):
+        # A rejection carrying no id can't be pinned on another appointment,
+        # so it must surface rather than be silently dropped.
+        payload = {"items": {}, "rejectedItems": [{"error": "malformed request"}]}
+        mocked.post(_api("/calendar/2026/5"), payload=payload)
+        with pytest.raises(WriteVerificationError):
+            await client.update_appointment(self._appt())
+
+    async def test_delete_raises_on_rejection(self, client, mocked):
+        payload = {"rejectedItems": [{"id": "a1", "error": "refused"}]}
+        mocked.post(_api("/calendar/2026/5"), payload=payload)
+        with pytest.raises(WriteVerificationError):
+            await client.delete_appointment("a1", 2026, 5)
+
+    async def test_create_raises_on_rejection(self, client, mocked):
+        mocked.post(
+            _api("/calendar/2026/5"),
+            payload={"items": {}, "rejectedItems": [{"error": "refused"}]},
+        )
+        appt = CoziAppointment.model_validate(
+            {"description": "Soccer", "day": "2026-05-02"}
+        )
+        with pytest.raises(WriteVerificationError):
+            await client.create_appointment(appt)
+
+    async def test_empty_rejected_list_is_not_an_error(self, client, mocked):
+        mocked.post(_api("/calendar/2026/5"), payload={"items": {}, "rejectedItems": []})
+        assert await client.delete_appointment("a1", 2026, 5) is True
+
+
+class TestPhantomItemOnPut:
+    """A PUT to an unknown item id returns 201 and creates it — an upsert, not an error."""
+
+    async def test_201_raises_and_cleans_up(self, client, mocked):
+        mocked.put(
+            _api("/list/l1/item/ghost"),
+            status=201,
+            payload={"itemId": "ghost", "text": "Milk", "status": "incomplete"},
+        )
+        # The cleanup PATCH; response omits the phantom, so removal verifies.
+        mocked.patch(_api("/list/l1"), payload={"listId": "l1", "items": []})
+        with pytest.raises(ResourceNotFoundError) as exc:
+            await client.update_item_text("l1", "ghost", "Milk")
+        assert "phantom item was removed" in str(exc.value)
+
+    async def test_201_reports_when_cleanup_fails(self, client, mocked, no_sleep):
+        mocked.put(
+            _api("/list/l1/item/ghost"),
+            status=201,
+            payload={"itemId": "ghost", "text": "Milk", "status": "incomplete"},
+        )
+        mocked.patch(_api("/list/l1"), status=500, payload={"error": "boom"})
+        with pytest.raises(ResourceNotFoundError) as exc:
+            await client.update_item_text("l1", "ghost", "Milk")
+        # The original error survives; the cleanup failure is only annotated.
+        assert "could NOT be removed" in str(exc.value)
+
+    async def test_200_is_a_normal_update(self, client, mocked):
+        mocked.put(
+            _api("/list/l1/item/i1"),
+            status=200,
+            payload={"itemId": "i1", "text": "Bread", "status": "incomplete"},
+        )
+        item = await client.update_item_text("l1", "i1", "Bread")
+        assert item.text == "Bread"
+
+    async def test_mark_item_201_raises(self, client, mocked):
+        mocked.put(
+            _api("/list/l1/item/ghost"),
+            status=201,
+            payload={"itemId": "ghost", "text": "", "status": "complete"},
+        )
+        mocked.patch(_api("/list/l1"), payload={"listId": "l1", "items": []})
+        with pytest.raises(ResourceNotFoundError):
+            await client.mark_item("l1", "ghost", ItemStatus.COMPLETE)
+
+
+class TestItemWriteVerification:
+    async def test_add_item_text_mismatch_raises(self, client, mocked):
+        mocked.post(
+            _api("/list/l1/item/"),
+            payload={"itemId": "i1", "text": "something else", "status": "incomplete"},
+        )
+        with pytest.raises(WriteVerificationError):
+            await client.add_item("l1", "Milk")
+
+    async def test_add_item_missing_id_raises(self, client, mocked):
+        mocked.post(_api("/list/l1/item/"), payload={"text": "Milk"})
+        with pytest.raises(WriteVerificationError) as exc:
+            await client.add_item("l1", "Milk")
+        assert "no id" in str(exc.value)
+
+    async def test_update_text_not_applied_raises(self, client, mocked):
+        mocked.put(
+            _api("/list/l1/item/i1"),
+            payload={"itemId": "i1", "text": "stale", "status": "incomplete"},
+        )
+        with pytest.raises(WriteVerificationError):
+            await client.update_item_text("l1", "i1", "Bread")
+
+    async def test_mark_item_status_not_applied_raises(self, client, mocked):
+        mocked.put(
+            _api("/list/l1/item/i1"),
+            payload={"itemId": "i1", "text": "Milk", "status": "incomplete"},
+        )
+        with pytest.raises(WriteVerificationError):
+            await client.mark_item("l1", "i1", ItemStatus.COMPLETE)
+
+    async def test_remove_items_survivor_raises(self, client, mocked):
+        mocked.patch(
+            _api("/list/l1"),
+            payload={"listId": "l1", "items": [{"itemId": "i1", "text": "Milk"}]},
+        )
+        with pytest.raises(WriteVerificationError) as exc:
+            await client.remove_items("l1", ["i1", "i2"])
+        assert "1 of 2" in str(exc.value)
+
+    async def test_remove_items_success(self, client, mocked):
+        mocked.patch(
+            _api("/list/l1"),
+            payload={"listId": "l1", "items": [{"itemId": "other", "text": "Eggs"}]},
+        )
+        assert await client.remove_items("l1", ["i1"]) is True
+
+    async def test_remove_items_unknown_id_is_success(self, client, mocked):
+        # Cozi no-ops a removal of an id that was never there; still "not there".
+        mocked.patch(_api("/list/l1"), payload={"listId": "l1", "items": []})
+        assert await client.remove_items("l1", ["never-existed"]) is True
+
+
+class TestRetryIsIdempotentOnly:
+    """Non-idempotent writes must not be replayed — Cozi applies them before failing."""
+
+    async def test_post_not_retried_on_network_error(self, client, mocked, no_sleep):
+        mocked.post(
+            _api("/calendar/2026/5"), exception=aiohttp.ClientConnectionError("oops")
+        )
+        appt = CoziAppointment.model_validate(
+            {"description": "Soccer", "day": "2026-05-02"}
+        )
+        with pytest.raises(NetworkError):
+            await client.create_appointment(appt)
+        # Exactly one attempt against the calendar endpoint — a retry here would
+        # risk a duplicate appointment, since Cozi applies the POST before the
+        # connection failure surfaces. (mocked.requests also holds the auth POST
+        # issued by the `client` fixture, hence the per-endpoint lookup.)
+        calls = mocked.requests[("POST", URL(_api("/calendar/2026/5")))]
+        assert len(calls) == 1
+
+    async def test_post_not_retried_on_500(self, client, mocked, no_sleep):
+        mocked.post(_api("/calendar/2026/5"), status=500, payload={"error": "boom"})
+        appt = CoziAppointment.model_validate(
+            {"description": "Soccer", "day": "2026-05-02"}
+        )
+        with pytest.raises(APIError) as exc:
+            await client.create_appointment(appt)
+        assert exc.value.status_code == 500
+
+    async def test_put_not_retried_on_500(self, client, mocked, no_sleep):
+        mocked.put(_api("/list/l1/item/i1"), status=500, payload={"error": "boom"})
+        with pytest.raises(APIError):
+            await client.update_item_text("l1", "i1", "Bread")
+
+    async def test_delete_still_retried(self, client, mocked, no_sleep):
+        # DELETE is idempotent, so replay is safe and still happens.
+        mocked.delete(_api("/list/l1"), status=500, payload={"error": "boom"})
+        mocked.delete(_api("/list/l1"), status=204)
+        assert await client.delete_list("l1") is True
+
+    async def test_post_still_retried_on_429(self, client, mocked, no_sleep):
+        # 429 is rejected before the write is applied, so replay is safe.
+        mocked.post(_api("/calendar/2026/5"), status=429, payload={})
+        mocked.post(_api("/calendar/2026/5"), payload={"items": {}})
+        assert await client.delete_appointment("a1", 2026, 5) is True
+
+
+class TestAuthDoesNotLeakCredentials:
+    async def test_invalid_response_message_omits_tokens(self, mocked):
+        secret = "super-secret-refresh-token"
+        mocked.post(
+            AUTH_URL,
+            payload={"accessToken": "x", "refreshToken": secret},  # no accountId
+        )
+        async with CoziClient(TEST_USERNAME, TEST_PASSWORD) as c:
+            with pytest.raises(AuthenticationError) as exc:
+                await c.authenticate()
+        message = str(exc.value)
+        assert secret not in message
+        assert "missing accountId" in message
+
+    async def test_no_token_in_debug_logs(self, mocked, auth_response, caplog):
+        import logging as _logging
+
+        with caplog.at_level(_logging.DEBUG, logger="cozi_client"):
+            mocked.post(AUTH_URL, payload=auth_response)
+            async with CoziClient(TEST_USERNAME, TEST_PASSWORD) as c:
+                await c.authenticate()
+        assert TEST_ACCESS_TOKEN not in caplog.text
+
+    async def test_non_dict_login_response(self, mocked):
+        mocked.post(AUTH_URL, payload=["unexpected"])
+        async with CoziClient(TEST_USERNAME, TEST_PASSWORD) as c:
+            with pytest.raises(AuthenticationError) as exc:
+                await c.authenticate()
+        assert "expected an object" in str(exc.value)
+
+
+class TestReauthPreservesBrowserHeaders:
+    async def test_cloudflare_headers_survive_reauth(
+        self, client, mocked, auth_response, no_sleep
+    ):
+        mocked.get(_api("/list/"), status=401, payload={"error": "expired"})
+        mocked.post(AUTH_URL, payload=auth_response)
+        mocked.get(_api("/list/"), payload=[])
+        await client.get_lists()
+
+        # The retried GET must still carry the headers Cloudflare requires,
+        # alongside the refreshed bearer token.
+        key = [k for k in mocked.requests if k[0] == "GET"][0]
+        headers = mocked.requests[key][-1].kwargs["headers"]
+        assert headers["Origin"] == "https://my.cozi.com"
+        assert headers["User-Agent"].startswith("Mozilla/5.0")
+        assert headers["Authorization"] == f"Bearer {TEST_ACCESS_TOKEN}"

@@ -255,15 +255,53 @@ class CoziAppointment(BaseModel):
         }
 
     def to_api_edit_format(self) -> Dict[str, Any]:
-        """Convert to API format for editing appointments."""
+        """
+        Convert to API format for editing appointments.
+
+        Cozi's calendar edit is a FULL REPLACE: any field omitted from the payload
+        is erased server-side. The recurrence rule parsed on the read path is
+        re-sent here so that an unrelated edit (changing notes, say) does not strip
+        a recurring appointment's schedule and flatten the series to one event.
+
+        Wire shape captured from the live Cozi web client on 2026-07-24 (DevTools),
+        via the parallel TypeScript client in cozi_mcp::
+
+            {"itemType": "appointment", "edit": {
+                "id": ..., "startDay": ...,
+                "recurrence": {"rules": [{"frequency": "Weekly", "interval": 1,
+                                          "byDay": ["FR"], "end": {}}]},
+                "details": {"startTime", "endTime", "dateSpan", "notes", "subject"}}}
+
+        Note the asymmetry, which is easy to get wrong: a calendar GET returns
+        recurrence nested under ``itemDetails``, but an edit expects it at the EDIT
+        level, as a sibling of ``details`` — not inside it. Nesting it inside
+        ``details`` leaves the rule unset and the series is flattened.
+
+        ``endDay`` is not a field of its own: it lives inside the recurrence object
+        and so round-trips automatically whenever recurrence is preserved intact.
+        The web client sends neither ``recurrenceStartDay`` nor ``endDay`` on edit
+        (the server derives both), so neither is sent here.
+
+        DO NOT send ``itemVersion``. Verified against live Cozi 2026-07-24:
+        including it makes the server silently discard the entire edit — the
+        request returns 200 and the merged object looks correct, but nothing
+        persists. The real web client does not send it either, so optimistic
+        concurrency is not available on this endpoint.
+        """
         if not self.id:
             raise ValueError("Cannot edit appointment without ID")
+
+        edit: Dict[str, Any] = {
+            "id": self.id,
+            "startDay": self.start_day.isoformat(),
+        }
+        if self.recurrence is not None:
+            edit["recurrence"] = self.recurrence
 
         return {
             "itemType": "appointment",
             "edit": {
-                "id": self.id,
-                "startDay": self.start_day.isoformat(),
+                **edit,
                 "details": {
                     "startTime": (
                         self.start_time.strftime("%H:%M") if self.start_time else None

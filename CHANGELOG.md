@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Ports five fixes from the parallel TypeScript client in `cozi_mcp` (commit
+`329f8a6`), where each behavior below was proven against a live Cozi account.
+
+### Fixed
+
+- **Editing a recurring appointment no longer destroys the series.** Cozi's
+  calendar edit is a full replace, and `CoziAppointment.to_api_edit_format()`
+  never sent `recurrence`, so changing anything else (notes, time, subject) on a
+  recurring appointment silently flattened it to a single event. The rule is now
+  re-sent at the edit level, as a sibling of `details` — a calendar GET returns
+  it nested under `itemDetails`, but an edit expects it one level up, and nesting
+  it inside `details` leaves the rule unset. `endDay` lives inside the recurrence
+  object and so round-trips with it. `itemVersion` is still never sent: including
+  it makes the server discard the entire edit while returning 200.
+
+- **Writes that Cozi silently discards now raise** instead of reporting success.
+  The calendar endpoint answers HTTP 200 while refusing an operation, naming the
+  reason only in a `rejectedItems` array that `create_appointment`,
+  `update_appointment`, and `delete_appointment` all ignored. Adds the new
+  `WriteVerificationError`, which is also raised when `add_item`,
+  `update_item_text`, `mark_item`, or `remove_items` get back a response that
+  does not reflect what was asked for.
+
+- **A stale item id no longer creates a phantom item.** A `PUT` to an item id
+  that does not exist answers **201** and persists a brand-new item under that
+  exact id — an upsert, not an error. `update_item_text` and `mark_item` had no
+  way to see this because 200 and 201 were collapsed into one path and the bodies
+  are identical. They now raise `ResourceNotFoundError` and delete the phantom
+  first; if that cleanup fails the original error still surfaces, noting that the
+  item may remain.
+
+- **Failed writes are no longer replayed.** Retries after a network error or 5xx
+  were applied to every method, so a `POST`/`PUT`/`PATCH` that Cozi had already
+  applied server-side could be double-applied — duplicate appointments or items.
+  Retries are now scoped to idempotent methods; 401 and 429 still retry for all
+  methods, since both are rejections issued before the request was applied.
+
+### Security
+
+- **Access and refresh tokens no longer leak into errors or logs.** A failed
+  login raised `AuthenticationError` with the entire response body interpolated
+  into the message, and `authenticate()` unconditionally debug-logged the full
+  response. The error now names only the missing field, and the log records only
+  the response's keys.
+
+- Re-authentication after a mid-session 401 replaced the request headers instead
+  of updating them, dropping the browser headers Cloudflare requires — so the
+  retry would 401 again. It now preserves them.
+
 ## [2.0.4] - 2026-05-10
 
 ### Changed
