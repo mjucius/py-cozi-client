@@ -5,10 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.0] - 2026-08-14
 
-Ports five fixes from the parallel TypeScript client in `cozi_mcp` (commit
-`329f8a6`), where each behavior below was proven against a live Cozi account.
+Ports the security and write-correctness fixes from the parallel TypeScript
+client in `cozi_mcp` (commit `329f8a6`), where each server behavior described
+below was proven against a live Cozi account. Also closes two path-traversal
+sinks that exist only in this client, in `get_calendar` and
+`delete_appointment`.
+
+### Added
+
+- **`WriteVerificationError`**, raised when Cozi returns a success status for a
+  write it did not apply. See the `rejectedItems` entry below.
+- **`validate_id`, `ID_PATTERN`, and `validate_calendar_period`** are now
+  exported from the package. `ID_PATTERN` is kept byte-identical to `ID_RE` in
+  `cozi_mcp` so both clients agree on what a legal id is, and so a downstream
+  caller — an MCP server validating LLM-supplied ids at its own tool boundary,
+  say — can reuse the pattern rather than re-deriving it.
 
 ### Fixed
 
@@ -45,6 +58,28 @@ Ports five fixes from the parallel TypeScript client in `cozi_mcp` (commit
   methods, since both are rejections issued before the request was applied.
 
 ### Security
+
+- **Path traversal via list and item ids (CWE-22).** A `list_id` or `item_id`
+  containing `../` escaped the account-scoped URL prefix: `urljoin` applies RFC
+  3986 dot-segment removal and aiohttp's yarl normalizes again, so
+  `/api/ext/2004/<acct>/list/../../../../evil` resolved to
+  `rest.cozi.com/api/evil` — aiming a request that carries the account's bearer
+  token at an arbitrary path on the host. A `?` or `#` instead truncated the
+  path into a query string or fragment. In `remove_items` the same ids were
+  interpolated into a JSON-Pointer `path` with no RFC 6901 escaping, where a `/`
+  or `~` retargeted the patch at a different node. Ids are now restricted to
+  `[A-Za-z0-9_-]` by the new `validate_id`, applied at method entry — before any
+  authentication or network I/O, so a malformed id costs no round trip. Affects
+  `update_list`, `delete_list`, `add_item`, `update_item_text`, `mark_item`, and
+  `remove_items`. Ports VULN-001/002 from `cozi_mcp` `329f8a6`.
+
+- **`get_calendar` and `delete_appointment` now validate `year` and `month`.**
+  Both interpolate the caller's values straight into `/calendar/{year}/{month}`,
+  and the `int` annotations are not enforced at runtime — `get_calendar` bounded
+  only `month`, and `delete_appointment` bounded neither, so a string `year` was
+  the same traversal in a different path. Both now go through
+  `validate_calendar_period`. No TypeScript counterpart; found while porting the
+  above.
 
 - **Access and refresh tokens no longer leak into errors or logs.** A failed
   login raised `AuthenticationError` with the entire response body interpolated

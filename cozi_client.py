@@ -33,6 +33,7 @@ from models import (
     CoziAppointment,
     CoziPerson,
 )
+from utils import validate_calendar_period, validate_id
 
 logger = logging.getLogger(__name__)
 
@@ -551,9 +552,10 @@ class CoziClient:
         """
         if not list_obj.id:
             raise ValidationError("Cannot update list without ID")
-        
+        list_id = validate_id(list_obj.id, "list_id")
+
         await self._ensure_authenticated()
-        endpoint = f"/api/ext/{self.API_VERSION}/{self._account_id}/list/{list_obj.id}"
+        endpoint = f"/api/ext/{self.API_VERSION}/{self._account_id}/list/{list_id}"
         
         # Convert items to API format
         items_data = []
@@ -591,7 +593,12 @@ class CoziClient:
         
         Returns:
             True if deletion was successful
+
+        Raises:
+            ValidationError: list_id is not a well-formed id
         """
+        list_id = validate_id(list_id, "list_id")
+
         await self._ensure_authenticated()
         endpoint = f"/api/ext/{self.API_VERSION}/{self._account_id}/list/{list_id}"
         await self._make_request("DELETE", endpoint)
@@ -610,10 +617,16 @@ class CoziClient:
         
         Returns:
             Created CoziItem object
+
+        Raises:
+            ValidationError: list_id is malformed, or text is empty
         """
+        # Id first, then text -- same order as the TypeScript client, so that when
+        # both are bad the two clients name the same problem.
+        list_id = validate_id(list_id, "list_id")
         if not text.strip():
             raise ValidationError("Item text cannot be empty")
-        
+
         await self._ensure_authenticated()
         endpoint = f"/api/ext/{self.API_VERSION}/{self._account_id}/list/{list_id}/item/"
         response = await self._make_request(
@@ -648,7 +661,14 @@ class CoziClient:
         residue. If that cleanup itself fails the original error still surfaces —
         losing it to report a cleanup problem would be worse — noting that the item
         may remain.
+
+        Both ids are validated here rather than in the callers: this is the single
+        choke point for update_item_text and mark_item, and it runs before
+        _ensure_authenticated, so a malformed id costs no login round trip.
         """
+        list_id = validate_id(list_id, "list_id")
+        item_id = validate_id(item_id, "item_id")
+
         await self._ensure_authenticated()
         endpoint = f"/api/ext/{self.API_VERSION}/{self._account_id}/list/{list_id}/item/{item_id}"
         status, response = await self._make_request_with_status("PUT", endpoint, data=data)
@@ -733,14 +753,26 @@ class CoziClient:
             True if removal was successful
 
         Raises:
+            ValidationError: list_id or any item_id is not a well-formed id
             WriteVerificationError: one or more items survived the removal
         """
+        # Ahead of the empty short-circuit: a malformed list_id is malformed
+        # whether or not there is anything to remove, and TS rejects it here too.
+        list_id = validate_id(list_id, "list_id")
         if not item_ids:
             return True
 
+        # Each id also lands in a JSON-Pointer `path`, which is built without RFC
+        # 6901 escaping. validate_id excludes `/` and `~`, the two characters that
+        # would let an id retarget the patch at a different node -- which is what
+        # makes the plain interpolation below safe.
+        operations = [
+            {"op": "remove", "path": f"/items/{validate_id(item_id, 'item_id')}"}
+            for item_id in item_ids
+        ]
+
         await self._ensure_authenticated()
         endpoint = f"/api/ext/{self.API_VERSION}/{self._account_id}/list/{list_id}"
-        operations = [{"op": "remove", "path": f"/items/{item_id}"} for item_id in item_ids]
 
         response = await self._make_request("PATCH", endpoint, data={"operations": operations})
 
@@ -776,9 +808,11 @@ class CoziClient:
         Returns:
             List of CoziAppointment objects
         """
-        if not (1 <= month <= 12):
-            raise ValidationError("Month must be between 1 and 12")
-        
+        # Both values are interpolated into the request path below, and the int
+        # annotations are not enforced at runtime, so they get the same treatment
+        # as list and item ids.
+        year, month = validate_calendar_period(year, month)
+
         await self._ensure_authenticated()
         endpoint = f"/api/ext/{self.API_VERSION}/{self._account_id}/calendar/{year}/{month}"
         response = await self._make_request("GET", endpoint)
@@ -970,8 +1004,13 @@ class CoziClient:
             True if deletion was successful
 
         Raises:
+            ValidationError: year or month is not a usable integer
             WriteVerificationError: Cozi refused the delete
         """
+        # appointment_id travels in the body, not the path, so only the period
+        # needs validating -- but it does need it, since it is interpolated below.
+        year, month = validate_calendar_period(year, month)
+
         await self._ensure_authenticated()
         endpoint = f"/api/ext/{self.API_VERSION}/{self._account_id}/calendar/{year}/{month}"
         delete_data = [{

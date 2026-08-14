@@ -4,7 +4,9 @@ from datetime import date, time
 
 import pytest
 
+from exceptions import ValidationError
 from utils import (
+    ID_PATTERN,
     calculate_date_span,
     extract_attendee_names,
     format_time_for_display,
@@ -14,7 +16,9 @@ from utils import (
     sanitize_item_text,
     sanitize_list_title,
     split_long_text,
+    validate_calendar_period,
     validate_email,
+    validate_id,
 )
 
 
@@ -200,3 +204,72 @@ class TestGetWeekBoundaries:
         start, end = get_week_boundaries(date(2026, 5, 10))
         assert start == date(2026, 5, 4)
         assert end == date(2026, 5, 10)
+
+
+# VULN-001 / VULN-002 (CWE-22). Ids are interpolated into request paths and into
+# JSON-Pointer paths, so the character class is the whole defense -- see the
+# comment on ID_PATTERN in utils.py. Mirrors cozi_mcp's
+# tests/security-path-traversal.test.ts.
+class TestValidateId:
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "../../evil",  # escapes the path prefix
+            "a/b",  # extra path segment, and retargets a JSON-Pointer
+            "..",
+            "x?y",  # truncates the path into a query string
+            "a#b",  # truncates the path into a fragment
+            "a%2e",  # percent-encoded traversal
+            "a~b",  # JSON-Pointer escape character
+            "a b",
+            "",
+        ],
+    )
+    def test_rejects(self, bad):
+        with pytest.raises(ValidationError):
+            validate_id(bad)
+
+    @pytest.mark.parametrize("good", ["AbC_123-def", "l1", "list-GUID_1", "0"])
+    def test_accepts_and_returns_unchanged(self, good):
+        assert ID_PATTERN.match(good)
+        assert validate_id(good) == good
+
+    def test_rejects_non_string(self):
+        with pytest.raises(ValidationError):
+            validate_id(None)
+
+    def test_message_names_the_parameter(self):
+        with pytest.raises(ValidationError, match="Invalid list_id"):
+            validate_id("../evil", "list_id")
+
+    def test_newline_cannot_smuggle_a_second_segment(self):
+        # re.match with `$` would accept "good\n"; ID_PATTERN must not.
+        with pytest.raises(ValidationError):
+            validate_id("good\n../evil")
+
+
+class TestValidateCalendarPeriod:
+    def test_accepts_valid_period(self):
+        assert validate_calendar_period(2026, 5) == (2026, 5)
+
+    @pytest.mark.parametrize(
+        "year, month",
+        [
+            ("../../../evil", 5),  # the traversal the int annotation does not stop
+            (2026, "13/../.."),
+            (2026, 0),
+            (2026, 13),
+            (1899, 5),
+            (3000, 5),
+            (None, 5),
+            (2026.0, 5),
+        ],
+    )
+    def test_rejects(self, year, month):
+        with pytest.raises(ValidationError):
+            validate_calendar_period(year, month)
+
+    def test_rejects_bool_as_month(self):
+        # bool subclasses int, so True would otherwise sail through as month 1.
+        with pytest.raises(ValidationError):
+            validate_calendar_period(2026, True)

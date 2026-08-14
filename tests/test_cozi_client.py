@@ -22,7 +22,7 @@ from exceptions import (
     ValidationError,
     WriteVerificationError,
 )
-from models import CoziAppointment, ItemStatus, ListType
+from models import CoziAppointment, CoziList, ItemStatus, ListType
 from tests.conftest import (
     AUTH_URL,
     TEST_ACCESS_TOKEN,
@@ -674,3 +674,130 @@ class TestReauthPreservesBrowserHeaders:
         assert headers["Origin"] == "https://my.cozi.com"
         assert headers["User-Agent"].startswith("Mozilla/5.0")
         assert headers["Authorization"] == f"Bearer {TEST_ACCESS_TOKEN}"
+
+
+# VULN-001 / VULN-002 (CWE-22), ported from cozi_mcp commit 329f8a6.
+#
+# Every negative case below uses a FRESH client rather than the `client` fixture,
+# which is already authenticated. That is the point: validation has to run before
+# _ensure_authenticated, so a bad id costs no login round trip. No mock is
+# registered either, so if any request escaped, aioresponses would refuse it and
+# the client would raise NetworkError instead of ValidationError.
+class TestPathTraversalRejected:
+    async def test_urljoin_really_does_traverse(self):
+        # Not a test of our code -- it pins the behavior that makes the rest of
+        # this class necessary, so nobody later reads the validation as paranoia.
+        from urllib.parse import urljoin
+
+        assert (
+            urljoin("https://rest.cozi.com", "/api/ext/2004/acct/list/../../../../evil")
+            == "https://rest.cozi.com/api/evil"
+        )
+
+    async def test_delete_list_rejects_traversal(self, mocked):
+        async with CoziClient(TEST_USERNAME, TEST_PASSWORD) as c:
+            with pytest.raises(ValidationError):
+                await c.delete_list("../../evil")
+        assert mocked.requests == {}
+
+    @pytest.mark.parametrize("bad", ["l1?admin=1", "l1#frag"])
+    async def test_delete_list_rejects_query_and_fragment(self, mocked, bad):
+        async with CoziClient(TEST_USERNAME, TEST_PASSWORD) as c:
+            with pytest.raises(ValidationError):
+                await c.delete_list(bad)
+        assert mocked.requests == {}
+
+    async def test_add_item_rejects_traversal(self, mocked):
+        async with CoziClient(TEST_USERNAME, TEST_PASSWORD) as c:
+            with pytest.raises(ValidationError):
+                await c.add_item("../../evil", "Milk")
+        assert mocked.requests == {}
+
+    async def test_update_item_text_rejects_traversal_item_id(self, mocked):
+        async with CoziClient(TEST_USERNAME, TEST_PASSWORD) as c:
+            with pytest.raises(ValidationError):
+                await c.update_item_text("l1", "../../../other-account/list", "pwned")
+        assert mocked.requests == {}
+
+    async def test_update_item_text_rejects_traversal_list_id(self, mocked):
+        async with CoziClient(TEST_USERNAME, TEST_PASSWORD) as c:
+            with pytest.raises(ValidationError):
+                await c.update_item_text("../evil", "i1", "x")
+        assert mocked.requests == {}
+
+    async def test_mark_item_rejects_traversal(self, mocked):
+        # The other _put_item caller; both share the one validation point.
+        async with CoziClient(TEST_USERNAME, TEST_PASSWORD) as c:
+            with pytest.raises(ValidationError):
+                await c.mark_item("l1", "../evil", ItemStatus.COMPLETE)
+        assert mocked.requests == {}
+
+    async def test_remove_items_rejects_one_bad_id_among_good(self, mocked):
+        async with CoziClient(TEST_USERNAME, TEST_PASSWORD) as c:
+            with pytest.raises(ValidationError):
+                await c.remove_items("l1", ["ok1", "../../evil"])
+        assert mocked.requests == {}
+
+    async def test_remove_items_rejects_json_pointer_retarget(self, mocked):
+        # "0/text" would produce path "/items/0/text" -- a remove of a subfield
+        # rather than the item.
+        async with CoziClient(TEST_USERNAME, TEST_PASSWORD) as c:
+            with pytest.raises(ValidationError):
+                await c.remove_items("l1", ["0/text"])
+        assert mocked.requests == {}
+
+    async def test_remove_items_validates_list_id_before_short_circuit(self, mocked):
+        # Behavior change: this used to return True without looking at list_id.
+        async with CoziClient(TEST_USERNAME, TEST_PASSWORD) as c:
+            with pytest.raises(ValidationError):
+                await c.remove_items("../evil", [])
+        assert mocked.requests == {}
+
+    async def test_update_list_rejects_traversal(self, mocked):
+        bad = CoziList(listId="../evil", title="x", listType="todo")
+        async with CoziClient(TEST_USERNAME, TEST_PASSWORD) as c:
+            with pytest.raises(ValidationError):
+                await c.update_list(bad)
+        assert mocked.requests == {}
+
+    # Positive controls: a legal id still reaches the wire verbatim. These prove
+    # validation is a gate, not a mangler -- nothing percent-encodes the segment.
+    async def test_valid_id_reaches_the_wire_unchanged(self, client, mocked):
+        mocked.delete(_api("/list/list-GUID_1"), status=204)
+        assert await client.delete_list("list-GUID_1") is True
+        assert ("DELETE", URL(_api("/list/list-GUID_1"))) in mocked.requests
+
+    async def test_valid_ids_scope_the_put(self, client, mocked):
+        mocked.put(
+            _api("/list/list_1/item/item_1"),
+            payload={"itemId": "item_1", "text": "renamed", "status": "incomplete"},
+        )
+        item = await client.update_item_text("list_1", "item_1", "renamed")
+        assert item.id == "item_1"
+        assert ("PUT", URL(_api("/list/list_1/item/item_1"))) in mocked.requests
+
+
+class TestCalendarPeriodValidation:
+    """year/month are interpolated into the path and the int hints aren't enforced."""
+
+    async def test_get_calendar_rejects_traversal_year(self, mocked):
+        async with CoziClient(TEST_USERNAME, TEST_PASSWORD) as c:
+            with pytest.raises(ValidationError):
+                await c.get_calendar("../../evil", 5)
+        assert mocked.requests == {}
+
+    async def test_delete_appointment_rejects_traversal_year(self, mocked):
+        async with CoziClient(TEST_USERNAME, TEST_PASSWORD) as c:
+            with pytest.raises(ValidationError):
+                await c.delete_appointment("a1", "../../evil", 5)
+        assert mocked.requests == {}
+
+    async def test_delete_appointment_rejects_bad_month(self, mocked):
+        async with CoziClient(TEST_USERNAME, TEST_PASSWORD) as c:
+            with pytest.raises(ValidationError):
+                await c.delete_appointment("a1", 2026, 13)
+        assert mocked.requests == {}
+
+    async def test_valid_period_still_works(self, client, mocked):
+        mocked.post(_api("/calendar/2026/5"), payload={"items": {}})
+        assert await client.delete_appointment("a1", 2026, 5) is True

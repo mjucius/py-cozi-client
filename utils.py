@@ -6,6 +6,88 @@ import re
 from datetime import date, datetime, time, timedelta
 from typing import List, Optional, Tuple
 
+from exceptions import ValidationError
+
+# The only shape a Cozi list/item id is allowed to take.
+#
+# Ids reach the API two ways, and both are injectable without this: they are
+# interpolated into the request path, and into the JSON-Pointer `path` of a PATCH
+# operation. A `../` in an id escapes the intended prefix -- urljoin applies RFC
+# 3986 remove_dot_segments and aiohttp's yarl normalizes dot segments again -- so
+# `/api/ext/2004/<acct>/list/../../../../evil` becomes rest.cozi.com/api/evil,
+# aiming a request that carries the account's bearer token at an arbitrary path.
+# A `?` or `#` truncates the path into a query or fragment instead. In a
+# JSON-Pointer, `/` and `~` retarget the patch at a different node.
+#
+# Restricting ids to unreserved characters closes all of it at once, which is why
+# no separate percent-encoding or RFC 6901 escaping step is needed downstream.
+# Kept byte-identical to ID_RE in the parallel TypeScript client (cozi_mcp) so
+# both agree on what a legal id is, and so the pattern string stays valid
+# ECMAScript for anything that re-exports it (a Pydantic Field(pattern=...) that
+# ends up in a JSON Schema, say). Matching is done with fullmatch below rather
+# than by anchoring with \Z, which would not survive that trip.
+ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def validate_id(value: str, name: str = "id") -> str:
+    """
+    Return ``value`` unchanged if it is a well-formed Cozi id, else raise.
+
+    Call this before any authentication or network I/O, so a malformed id costs
+    no round trip.
+
+    Args:
+        value: The candidate id
+        name: Parameter name, used in the error message
+
+    Returns:
+        The id, unchanged
+
+    Raises:
+        ValidationError: value is not a string matching ``ID_PATTERN``
+    """
+    # fullmatch, not match: Python's `$` also matches just before a trailing
+    # newline, so match() would accept "goodid\n". JavaScript's `$` does not do
+    # this without the `m` flag, so match() would be laxer than the TS validator
+    # this ports. The isinstance guard is load-bearing too -- re.fullmatch(None)
+    # raises a bare TypeError, and callers may be feeding this LLM-supplied JSON.
+    if not isinstance(value, str) or not ID_PATTERN.fullmatch(value):
+        raise ValidationError(f"Invalid {name}: {value!r}")
+    return value
+
+
+def validate_calendar_period(year: int, month: int) -> Tuple[int, int]:
+    """
+    Return ``(year, month)`` as ints if they can safely form a calendar path.
+
+    The annotations on the calendar methods are not enforced at runtime, so a
+    caller passing a string puts it straight into the request path -- the same
+    traversal sink :func:`validate_id` closes for list and item ids.
+
+    Args:
+        year: Four-digit year
+        month: Month, 1-12
+
+    Returns:
+        (year, month) as ints
+
+    Raises:
+        ValidationError: either value is not an integer, or is out of range
+    """
+    validated = []
+    for name, value, low, high in (
+        ("year", year, 1900, 2999),
+        ("month", month, 1, 12),
+    ):
+        # bool is an int subclass; True would otherwise pass as month 1.
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValidationError(f"Invalid {name}: expected an integer, got {value!r}")
+        if not low <= value <= high:
+            raise ValidationError(f"Invalid {name}: {value} is not in {low}-{high}")
+        validated.append(value)
+
+    return validated[0], validated[1]
+
 
 def validate_email(email: str) -> bool:
     """Validate email address format."""
