@@ -28,7 +28,7 @@ from exceptions import (
 )
 from utils import ID_PATTERN, validate_calendar_period, validate_id
 
-__version__ = "2.0.4"
+__version__ = "2.1.0"
 __all__ = [
     "CoziClient",
     "ListType",
