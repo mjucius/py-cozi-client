@@ -232,6 +232,21 @@ pytest
 - aiohttp 3.9.2+
 - pydantic 2.0+
 
+## Acknowledgments
+
+- The `apikey` query parameter required by the Cozi auth endpoint was reverse-engineered
+  from the live `my.cozi.com` web bundle by
+  [Wetzel402/py-cozi PR #3](https://github.com/Wetzel402/py-cozi/pull/3). Without it, every
+  login from a server environment returns 401 regardless of whether the credentials are
+  valid, which is indistinguishable from a wrong password. This client would not work
+  without that discovery.
+
+## Trademark and affiliation
+
+Cozi and the Cozi logo are trademarks of Cozi Group Inc. This project is unofficial and not
+affiliated with, endorsed by, or sponsored by Cozi Group Inc. Use of the Cozi API is at your
+own risk and subject to [Cozi's Terms of Service](https://www.cozi.com/terms-of-service/).
+
 ## License
 
 MIT License
