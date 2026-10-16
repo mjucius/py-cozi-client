@@ -1,7 +1,7 @@
 """CoziAppointment, the calendar helpers and the payload guards (pure; no HTTP)."""
 
 import copy
-from datetime import date, time
+from datetime import date, datetime, time
 
 import pytest
 from pydantic import ValidationError
@@ -347,11 +347,28 @@ class TestRepeatRule:
             {"frequency": "daily", "interval": 0},
             {"frequency": "daily", "interval": True},
             {"frequency": "daily", "until": date(2019, 1, 7)},
+            {"frequency": "daily", "until": datetime(2019, 2, 12)},
         ],
     )
     def test_refusals(self, kwargs):
         with pytest.raises(CoziValidationError):
             repeat_rule(start_day=date(2019, 1, 8), **kwargs)
+
+    @pytest.mark.parametrize(
+        "start_day, until",
+        [
+            (datetime(2019, 1, 8), None),
+            # Both datetimes went out as untilDay "2019-02-12T00:00:00".
+            (datetime(2019, 1, 8), datetime(2019, 2, 12)),
+            (datetime(2019, 1, 8), date(2019, 2, 12)),
+            (date(2019, 1, 8), datetime(2019, 2, 12)),
+            ("2019-01-08", None),
+            (None, None),
+        ],
+    )
+    def test_refuses_what_is_not_a_plain_day(self, start_day, until):
+        with pytest.raises(CoziValidationError, match="Invalid day"):
+            repeat_rule("daily", start_day=start_day, until=until)
 
 
 def _appt(**kw):

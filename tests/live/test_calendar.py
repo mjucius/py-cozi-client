@@ -443,6 +443,8 @@ async def test_parse_event_stores_nothing(cozi):
         time(15),
         time(16),
     )
+    # The result goes to create_appointment, which refuses a meal or birthday item_type.
+    assert event.item_type in (None, "appointment")
     assert digest(await raw_page(cozi, 2019, 1)) == before
 
 

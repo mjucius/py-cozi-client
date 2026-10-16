@@ -14,7 +14,7 @@ Things Cozi does that the endpoints don't make obvious (all seen live on 2026-10
 """
 
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Type, Union
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Type, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -107,6 +107,10 @@ def _item_text(text: str, header: bool) -> str:
     header is sent in upper case, and an all-caps plain item in sentence case
     ("MILK" -> "Milk").
     """
+    # _verify_item compares against header itself; None or "yes" would send one
+    # kind, verify another, and raise after the write landed.
+    if not isinstance(header, bool):
+        raise CoziValidationError(f"header must be True or False, got {header!r}")
     if header:
         text = text.upper()
         if not text.isupper():
@@ -264,8 +268,9 @@ class ListsMixin(Transport):
         against the list Cozi returns, raises WriteVerificationError.
         """
         list_id = validate_id(list_id, "list_id")
-        if isinstance(item_ids, str):
-            raise CoziValidationError("item_ids must be a list of ids, not a single string")
+        # A str would iterate one id per character; None or an int would raise TypeError.
+        if isinstance(item_ids, str) or not isinstance(item_ids, Iterable):
+            raise CoziValidationError("item_ids must be a list of ids")
         # Each id lands in a JSON-Pointer path. validate_id rules out "/" and "~",
         # which could otherwise point the remove at a different node.
         ids = [validate_id(i, "item_id") for i in item_ids]

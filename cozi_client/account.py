@@ -8,6 +8,7 @@ pii, subscription data and feed URLs must never reach a log.
 """
 
 import os
+import re
 from enum import Enum
 from typing import Any, Callable, Dict, Iterable, List, Optional, TypeVar, Union
 
@@ -110,7 +111,7 @@ def default_settings(email: str = "") -> PersonSettings:
     Without an email the web turns every email channel off (its own validation
     refuses email channels with no address) and keeps push on.
     """
-    by_email = bool(email)
+    by_email = isinstance(email, str) and bool(email.strip())
     return PersonSettings.model_validate(
         {
             "calendarItemNotification": {"emailEnabled": by_email, "pushEnabled": True},
@@ -206,6 +207,11 @@ def _person_body(name: Any, email: Any, color_index: Any, settings: Any) -> Dict
         raise CoziValidationError("Name cannot be empty")
     if not isinstance(email, str):
         raise CoziValidationError(f"Invalid email: expected a string, got {type(email).__name__}")
+    # Stripped so "   " counts as no email in the guards below and in update_person.
+    # ponytail: shape check only; the web also runs validator.isEmail, Cozi decides the rest.
+    email = email.strip()
+    if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise CoziValidationError("Invalid email address")
     if not isinstance(settings, PersonSettings):
         raise CoziValidationError("settings must be a PersonSettings")
     if not email and settings.any_email:
@@ -274,7 +280,7 @@ class AccountMixin(Transport):
         Cozi send it a verification email.
         """
         if settings is None:
-            settings = default_settings(email if isinstance(email, str) else "")
+            settings = default_settings(email)
         body = _person_body(name, email, 0 if color_index is None else color_index, settings)
         if color_index is None:
             body["colorIndex"] = await self._free_color()

@@ -9,8 +9,9 @@ imported name), and end by asserting the box matches the snapshot.
 Observed 2026-10-16 (and pinned below): recipes are not gated on this account;
 an empty box is []; recipeId differs from recipeBoxId; `version` is a counter that
 every write bumps, and a stale one is not refused; PUT /food/recipe/{id} also
-updates in place; a second DELETE is 404; an upload does not attach the photo by
-itself, and a Bearer-only upload is accepted too.
+updates in place; a second DELETE is 404; a save of a deleted recipe answers 200
+with its id and stores nothing; an upload does not attach the photo by itself, and
+a Bearer-only upload is accepted too.
 """
 
 import inspect
@@ -88,6 +89,15 @@ async def test_create_read_update_delete(live_client):
     assert box_id not in await box(cozi)
     with pytest.raises(ResourceNotFoundError):
         await cozi.delete_recipe(box_id)
+
+    # A stale save of the deleted recipe: Cozi answers 200 with the same id and
+    # stores nothing, so update_recipe must raise rather than report success.
+    gone = set(await box(cozi))
+    with pytest.raises(ResourceNotFoundError, match="stored nothing"):
+        await cozi.update_recipe(updated)
+    with pytest.raises(ResourceNotFoundError, match="no photo was uploaded"):
+        await cozi.upload_recipe_photo(updated, PNG, "pixel.png")
+    assert set(await box(cozi)) == gone
 
 
 async def test_put_updates_in_place_and_stale_version_is_not_refused(live_client):

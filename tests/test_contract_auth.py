@@ -89,7 +89,11 @@ async def test_paths_are_exact(stub):
 
 
 async def test_traversal_id_never_reaches_the_socket(stub):
-    from cozi_client._transport import validate_id
-
-    with pytest.raises(CoziValidationError):
-        validate_id("../../evil", "list_id")
+    async with stub.client() as cozi:
+        await cozi.authenticate()
+        before = len(stub.requests)
+        with pytest.raises(CoziValidationError):
+            await cozi.delete_list("../../evil")
+        with pytest.raises(CoziValidationError):
+            await cozi.add_item("l1?x=1", "Milk")
+    assert len(stub.requests) == before

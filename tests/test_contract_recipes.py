@@ -52,12 +52,14 @@ async def test_recipe_flow_uses_exact_paths(stub):
         assert (await cozi.get_curated_recipes())[0].recipe_id == "c1"
         assert (await cozi.import_recipe("https://example.com/p")).ingredients[0].name == "egg"
     resource = [r for r in stub.requests if "/food/" in r["path"]]
-    assert len(resource) == 6
+    assert len(resource) == 7  # update_recipe re-reads the box to confirm the recipe exists
+    assert len(stub.sent("GET", RECIPES)) == 2
     assert all(r["headers"]["Authorization"] == "Bearer tok-1" for r in resource)
     assert stub.sent("POST", RECIPES)[0]["json"] == {**STORED, "notes": "n", "title": "Soup"}
 
 
 async def test_photo_upload_is_multipart_file_with_query_token(stub):
+    stub.route("GET", RECIPES, json=[STORED])
     stub.route("POST", PHOTO, json={"thumbUrl": "t", "viewUrl": "v"}, auth="query")
     stub.route("POST", RECIPES, echo)
     async with stub.client() as cozi:
@@ -75,11 +77,18 @@ async def test_photo_upload_is_multipart_file_with_query_token(stub):
 
 
 async def test_photo_upload_401_replays_with_new_token_and_fresh_form(stub):
+    async def box_then_rotate(request: web.Request) -> web.Response:
+        # The existence check passes; the token then rotates, so the upload is the
+        # request that meets the 401.
+        if len(stub.sent("GET", RECIPES)) == 1:
+            stub.token = "rotated-elsewhere"
+        return web.json_response([STORED])
+
+    stub.route("GET", RECIPES, box_then_rotate)
     stub.route("POST", PHOTO, json={"thumbUrl": "t"}, auth="query")
     stub.route("POST", RECIPES, echo)
     async with stub.client() as cozi:
         await cozi.authenticate()
-        stub.token = "rotated-elsewhere"
         await cozi.upload_recipe_photo(CoziRecipe.model_validate(STORED), PNG, "pixel.png")
     first, second = stub.sent("POST", PHOTO)
     assert (first["query"]["auth"], second["query"]["auth"]) == ("tok-1", "tok-2")

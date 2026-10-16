@@ -434,19 +434,27 @@ class Transport:
                     params=query,
                     headers=request_headers,
                     timeout=timeout,
+                    # Per request, so an injected session's raise_for_status=True
+                    # cannot bypass the status handling below.
+                    raise_for_status=False,
                     **body_kwargs,
                 ) as response:
                     status = response.status
                     payload = await response.read()
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                # Never format the exception: a ClientResponseError's str and repr hold
+                # the request URL (?auth= on uploads) and headers (the bearer token).
+                detail = type(e).__name__
+                if isinstance(e, aiohttp.ClientResponseError):
+                    detail += f" {e.status}"
                 if retriable and attempt < self.retry_attempts - 1:
                     wait = 0.5 * 2**attempt
                     attempt += 1
-                    previous_5xx = False
-                    logger.warning("Network error on %s %s, retrying in %ss: %r", method, path, wait, e)
+                    logger.warning("Network error on %s %s, retrying in %ss: %s", method, path, wait, detail)
                     await asyncio.sleep(wait)
                     continue
-                raise NetworkError(f"Network request failed: {e!r}") from e
+                # from None: a chained cause would print the same URL and headers.
+                raise NetworkError(f"Network request failed: {detail}") from None
 
             if 200 <= status < 300:
                 return status, self._decode(method, path, status, payload, raw)

@@ -42,6 +42,11 @@ MEAL_SLOTS: Dict[str, Tuple[str, str]] = {
 }
 
 
+def _plain_day(value: Any) -> bool:
+    # A datetime is a date too, but would go out as "2019-01-15T00:00:00".
+    return isinstance(value, date) and not isinstance(value, datetime)
+
+
 def _iso_day(value: Any) -> Optional[date]:
     if isinstance(value, str) and _ISO_DAY.match(value):
         try:
@@ -89,6 +94,9 @@ def repeat_rule(
             on its nth weekday ("2TU"; a 5th weekday becomes the last, "-1TU").
         until: Last day of the series; None repeats forever.
     """
+    for day in (start_day,) if until is None else (start_day, until):
+        if not _plain_day(day):
+            raise CoziValidationError(f"Invalid day: {day!r}")
     freq = frequency.lower() if isinstance(frequency, str) else ""
     if freq not in ("daily", "weekly", "monthly", "yearly"):
         raise CoziValidationError(f"Unknown repeat frequency: {frequency!r}")
@@ -610,6 +618,12 @@ class CalendarMixin(Transport):
         Set ``recurrence`` (see repeat_rule) for a series and ``reminders`` in minutes.
         ``notify`` lists person ids Cozi should tell about the change.
         """
+        if appt.item_type not in (None, "appointment"):
+            # _appointment_op would turn it into a plain appointment, dropping what makes it one.
+            raise CoziValidationError(
+                f"A {appt.item_type!r} item is created with create_birthday or create_meal, "
+                "not create_appointment"
+            )
         if not appt.subject.strip():
             raise CoziValidationError("Appointment subject cannot be empty")
         op = _appointment_op(appt, "create", None, notify)
@@ -659,9 +673,8 @@ class CalendarMixin(Transport):
                 )
             op = _appointment_op(appt, "edit", occ, notify)
         page = await self._write(appt.start_day, op, "edit", appt.id)
-        if occ and not (
-            occ.extent == Extent.FORWARD and occ.day == (appt.recurrence_start_day or appt.start_day)
-        ):
+        # Not start_day as a fallback for an unknown series start: the caller moved it to occ.day.
+        if occ and not (occ.extent == Extent.FORWARD and occ.day == appt.recurrence_start_day):
             return await self._stored_occurrence_edit(appt, occ, page)
         # A forward edit from the first occurrence edits the series in place (live 2026-10-16).
         if appt.id not in page and appt.is_recurring and appt.occurrence_days:
@@ -707,29 +720,30 @@ class CalendarMixin(Transport):
         name: str,
         day: date,
         birth_year: Optional[int] = None,
-        reminders: Sequence[int] = (10080, 1440),
+        reminders: Optional[Sequence[int]] = (10080, 1440),
     ) -> CoziAppointment:
         """
         Add a yearly birthday for ``name`` on ``day``'s month and day (reminders default:
-        a week and a day before). Cozi starts the series in ``birth_year``, or in 1904
-        when it is None (live 2026-10-16), so that is the ``start_day`` it reads back with.
+        a week and a day before; None sends none). Cozi starts the series in
+        ``birth_year``, or in 1904 when it is None (live 2026-10-16), so that is the
+        ``start_day`` it reads back with.
         """
         if not isinstance(name, str) or not name.strip():
             raise CoziValidationError("Birthday name cannot be empty")
-        if isinstance(birth_year, int) and isinstance(day, date) and birth_year > day.year:
-            # Cozi would start the series after `day`, off the page the create is read back from.
-            raise CoziValidationError(f"birth_year {birth_year} is after {day}")
         appt = _new(
             {
                 "start_day": day,
                 "item_type": "birthday",
                 "name": name.strip(),
                 "birth_year": birth_year,
-                "reminders": list(reminders),
+                "reminders": reminders,
             }
         )
+        if appt.birth_year and appt.birth_year > appt.start_day.year:
+            # Cozi would start the series after `day`, off the page the create is read back from.
+            raise CoziValidationError(f"birth_year {appt.birth_year} is after {appt.start_day}")
         return await self._create(
-            day,
+            appt.start_day,
             _birthday_op(appt, "create"),
             lambda a: a.item_type == "birthday" and a.name == name.strip(),
         )
@@ -764,7 +778,9 @@ class CalendarMixin(Transport):
             }
         )
         return await self._create(
-            day, _meal_op(meal, "create"), lambda a: a.item_type == "meal" and a.start_day == day
+            meal.start_day,
+            _meal_op(meal, "create"),
+            lambda a: a.item_type == "meal" and a.start_day == meal.start_day,
         )
 
     async def update_meal(self, meal: CoziAppointment) -> CoziAppointment:
@@ -849,12 +865,7 @@ class CalendarMixin(Transport):
                     "Extent.FORWARD) for some occurrences, or WHOLE_SERIES for every one"
                 )
             return None
-        # A datetime is a date too, but would go out as "2019-01-15T00:00:00".
-        if (
-            not isinstance(scope.day, date)
-            or isinstance(scope.day, datetime)
-            or not isinstance(scope.extent, Extent)
-        ):
+        if not _plain_day(scope.day) or not isinstance(scope.extent, Extent):
             raise CoziValidationError(f"Invalid occurrence: {scope!r}")
         if not appt.is_recurring:
             raise CoziValidationError(f"{appt.id} is not recurring; it takes no occurrence scope")
@@ -876,20 +887,23 @@ class CalendarMixin(Transport):
         self, appt: CoziAppointment, occ: Occurrence, home: Dict[str, CoziAppointment]
     ) -> CoziAppointment:
         """
-        The item Cozi stored for an occurrence edit, which never has ``appt.id``.
+        The item Cozi stored for an occurrence edit.
 
-        DAY: a stand-in, linked from the series' exdate for that day as
-        ``standinApptId``. FORWARD: a new series starting on ``appt.start_day``. Both
-        live on ``home``, the page of ``appt.start_day``. A series with no day left on
+        DAY: a stand-in with a new id, linked from the series' exdate for that day as
+        ``standinApptId``. FORWARD: a new series starting on ``appt.start_day``, or
+        ``appt`` itself edited in place when that was its first occurrence (reached here
+        only when ``recurrence_start_day`` is unknown). Both live on ``home``, the page
+        of ``appt.start_day``. A series with no day left on
         that page is not listed there; its exdate is then read from the occurrence's
         own page, and failing that the stand-in is matched by what was sent. Port of
         cozi_mcp storedOccurrenceEdit.
         """
 
+        # No id check: after a split the old series keeps its own start day, and the DAY
+        # branch excludes it as recurring; FORWARD must still find an in-place edit.
         def looks_like(a: CoziAppointment) -> bool:
             return (
-                a.id != appt.id
-                and a.start_day == appt.start_day
+                a.start_day == appt.start_day
                 and a.subject == appt.subject.strip()
                 and _same_time(a.start_time, appt.start_time)
                 and _same_time(a.end_time, appt.end_time)

@@ -1,5 +1,8 @@
 """Live: login, cookie token refresh, logout, and the apikey on resource calls."""
 
+from http.cookies import SimpleCookie
+from typing import Dict, Tuple
+
 import aiohttp
 from yarl import URL
 
@@ -30,17 +33,13 @@ async def test_rejected_token_mid_session_is_renewed(live_client):
     assert isinstance(persons, list)
 
 
-async def test_logout_revokes_the_refresh_cookie_on_the_server():
-    async with make_client() as cozi:
-        await cozi.authenticate()
-        account = cozi.account_id
-        jar = cozi._session.cookie_jar.filter_cookies(URL(f"{cozi.BASE_URL}/api/ext/2111/{account}/auth/reauth"))
-        assert "cozi_refresh" in jar
-        refresh = jar["cozi_refresh"].value
-        await cozi.logout()
-        assert cozi.account_id is None
+async def raw_reauth(account: str, cookies: Dict[str, str]) -> Tuple[int, bool, SimpleCookie]:
+    """
+    POST reauth from a fresh session that carries only ``cookies``.
 
-    # Present the captured cookie directly: clearing the jar alone would prove nothing.
+    Returns the status, whether a token was issued (never the token itself) and the
+    response's Set-Cookie. Keep the body out of every assert: on success it holds a token.
+    """
     async with aiohttp.ClientSession() as raw:
         async with raw.post(
             f"{CoziClient.BASE_URL}/api/ext/2111/{account}/auth/reauth",
@@ -48,12 +47,40 @@ async def test_logout_revokes_the_refresh_cookie_on_the_server():
             headers={
                 **CoziClient.BROWSER_HEADERS,
                 "Content-Type": "application/json; charset=utf-8",
-                "Cookie": f"cozi_refresh={refresh}",
+                "Cookie": "; ".join(f"{k}={v}" for k, v in cookies.items()),
             },
             data=b"",
         ) as response:
             body = await response.json(content_type=None) if await response.read() else None
-            status = response.status
-    assert not (status == 200 and isinstance(body, dict) and body.get("accessToken")), (
-        f"reauth still issued a token after logout (status {status})"
-    )
+            issued = response.status == 200 and isinstance(body, dict) and bool(body.get("accessToken"))
+            return response.status, issued, response.cookies
+
+
+async def test_logout_revokes_the_refresh_cookie_on_the_server():
+    async with make_client() as cozi:
+        await cozi.authenticate()
+        account = cozi.account_id
+        reauth_url = URL(f"{cozi.BASE_URL}/api/ext/2111/{account}/auth/reauth")
+        # Replay everything the jar sends: Cozi refuses cozi_refresh without device_id
+        # (401, observed 2026-10-16).
+        cookies = {k: m.value for k, m in cozi._session.cookie_jar.filter_cookies(reauth_url).items()}
+        has_refresh = "cozi_refresh" in cookies
+        assert has_refresh, "login set no cozi_refresh cookie"
+
+        # Control: the same raw request is honoured while the cookie is live, so a
+        # refusal after logout is the server revoking it, not a malformed request.
+        status, issued, set_cookies = await raw_reauth(account, cookies)
+        assert issued, f"control reauth refused a live cookie (status {status})"
+        # Reauth rotates the cookie (observed 2026-10-16). Hand the new one to the client
+        # so logout revokes the cookie under test.
+        rotated = set_cookies.get("cozi_refresh")
+        if rotated is not None and rotated.value:
+            cookies["cozi_refresh"] = rotated.value
+            cozi._session.cookie_jar.update_cookies(set_cookies, reauth_url)
+
+        await cozi.logout()
+        assert cozi.account_id is None
+
+    status, issued, _ = await raw_reauth(account, cookies)
+    assert not issued, f"reauth still issued a token after logout (status {status})"
+    assert status == 401, f"expected 401 for a revoked cookie, got {status}"

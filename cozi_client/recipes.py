@@ -8,16 +8,21 @@ Every endpoint is under API version 2103, as in the web client (bundle main.c431
 import mimetypes
 import re
 import uuid
-from typing import TYPE_CHECKING, Any, Dict, List, NoReturn, Optional, Union
+from typing import Any, Dict, List, NoReturn, Optional, Union
 
 import aiohttp
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ._transport import ID_PATTERN, MAX_PHOTO_BYTES, Transport, _reason, logger, parse_model, parse_models, validate_id
-from .exceptions import APIError, CoziException, CoziValidationError, ResponseParseError, WriteVerificationError
-
-if TYPE_CHECKING:
-    from .lists import CoziItem
+from .exceptions import (
+    APIError,
+    CoziException,
+    CoziValidationError,
+    ResourceNotFoundError,
+    ResponseParseError,
+    WriteVerificationError,
+)
+from .lists import CoziItem, _item_text, _text
 
 RECIPES = "/2103/{acct}/food/recipe/"
 SCRAPE = "/2103/{acct}/food/scrape/recipe/"
@@ -53,7 +58,7 @@ class CoziRecipe(BaseModel):
     including server-derived fields such as ``creationDate`` and ``sourceUrl``.
     """
 
-    model_config = ConfigDict(populate_by_name=True, extra="allow")
+    model_config = ConfigDict(populate_by_name=True, extra="allow", validate_assignment=True)
 
     recipe_box_id: Optional[str] = Field(None, alias="recipeBoxId")
     recipe_id: Optional[str] = Field(None, alias="recipeId")
@@ -164,14 +169,26 @@ class RecipesMixin(Transport):
         rather than nulled. Cozi does not refuse a stale ``version``: the last write wins.
 
         Raises WriteVerificationError if Cozi stored a new recipe instead of
-        updating; that duplicate is deleted first.
+        updating; that duplicate is deleted first. Raises ResourceNotFoundError if
+        the recipe was deleted: Cozi answers such a save with 200 and the same id,
+        but stores nothing, so the box is read back to tell.
         """
         box_id = _saveable(recipe)
         body = {**recipe.to_wire(), "title": recipe.name}
         stored = parse_model(CoziRecipe, await self._request("POST", RECIPES, json=body))
         if stored.recipe_box_id != box_id:
             await self._discard_duplicate(stored.recipe_box_id, box_id)
+        if not await self._recipe_exists(box_id):
+            raise ResourceNotFoundError(f"Recipe {box_id} does not exist; Cozi accepted the write but stored nothing")
         return stored
+
+    async def _recipe_exists(self, box_id: str) -> bool:
+        # Raw JSON rather than get_recipes: one unrelated recipe that does not parse
+        # must not turn a good write into a ResponseParseError.
+        box = await self._request("GET", RECIPES)
+        if not isinstance(box, list):
+            raise ResponseParseError(f"Expected a list of recipes from Cozi, got {type(box).__name__}")
+        return any(isinstance(r, dict) and r.get("recipeBoxId") == box_id for r in box)
 
     async def _discard_duplicate(self, new_id: Optional[str], box_id: str) -> NoReturn:
         cleanup = "no new id came back to remove"
@@ -240,6 +257,9 @@ class RecipesMixin(Transport):
             raise CoziValidationError("Photo filename cannot be empty")
         # The re-save's checks, before the upload: a refused re-save would orphan the photo.
         box_id = _saveable(recipe)
+        if not await self._recipe_exists(box_id):
+            # Cozi would take the upload (200) and the re-save, and store neither.
+            raise ResourceNotFoundError(f"Recipe {box_id} does not exist; no photo was uploaded")
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         payload = bytes(data)
 
@@ -259,18 +279,25 @@ class RecipesMixin(Transport):
             )
         return await self.update_recipe(recipe.model_copy(update={"photos": [photo, *(recipe.photos or [])]}))
 
-    async def add_recipe_to_list(self, recipe: CoziRecipe, list_id: str) -> List["CoziItem"]:
+    async def add_recipe_to_list(self, recipe: CoziRecipe, list_id: str) -> List[CoziItem]:
         """
         Add a recipe to a list, as the web client does: a header with the recipe's
         name at the top, then one item per ingredient, in order.
 
-        The items are added one request at a time and not retried, so a failure
-        part-way leaves the items already added.
+        Every line is checked before the first add, but the items are added one
+        request at a time and not retried, so a failure part-way (network, server)
+        leaves the items already added.
         """
         list_id = validate_id(list_id, "list_id")
         if not isinstance(recipe.name, str) or not recipe.name.strip():
             raise CoziValidationError("Recipe name cannot be empty")
+        # validate_assignment does not see an in-place .append.
+        if not all(isinstance(i, CoziIngredient) for i in recipe.ingredients or []):
+            raise CoziValidationError("recipe.ingredients must be CoziIngredient objects")
         names = [i.name for i in recipe.ingredients or [] if isinstance(i.name, str) and i.name.strip()]
+        for name in names:
+            _item_text(_text(name, "Ingredient"), False)  # add_item's refusal, before anything is sent
+        # The header needs no pre-check: it is the first add, and add_item checks before sending.
         items = [await self.add_item(list_id, recipe.name.upper(), position=0, header=True)]  # type: ignore[attr-defined]
         for position, name in enumerate(names, start=1):
             items.append(await self.add_item(list_id, name, position=position))  # type: ignore[attr-defined]

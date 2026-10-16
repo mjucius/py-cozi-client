@@ -73,6 +73,13 @@ def unlisted_series():
     return appt
 
 
+def startless_series():
+    # Built by hand, or read from a payload without itemDetails.recurrenceStartDay.
+    appt = series()
+    appt.recurrence_start_day = None
+    return appt
+
+
 def one_off(**kw):
     return CoziAppointment.model_validate({**raw("a1", itemVersion=3), **kw})
 
@@ -327,6 +334,11 @@ class TestCreate:
                 date_span=2,
                 recurrence=repeat_rule("daily", start_day=date(2019, 1, 15)),
             ),
+            # A meal or birthday read back would become a plain appointment.
+            CoziAppointment(start_day=date(2019, 1, 15), subject="Soup", item_type="meal"),
+            CoziAppointment(
+                start_day=date(2019, 1, 15), subject="Ann's birthday", item_type="birthday"
+            ),
         ],
     )
     async def test_create_guards_before_io(self, client, mocked, appt):
@@ -554,6 +566,36 @@ class TestUpdate:
         assert posted(mocked)[0][0]["extent"] == "forward"
         assert stored.id == "s1"
 
+    async def test_forward_split_with_the_series_start_unknown_returns_the_new_series(
+        self, client, mocked
+    ):
+        # start_day was moved to the occurrence, so it cannot stand in for the series start.
+        appt = startless_series()
+        appt.start_day = date(2019, 1, 22)
+        appt.start_time, appt.end_time = time(9), time(9, 30)
+        split = {**series_raw("s2", "2019-01-22"), "startTime": "09:00:00", "endTime": "09:30:00"}
+        mocked.post(api(JAN), payload=page(series_raw(), split))
+        stored = await client.update_appointment(
+            appt, scope=Occurrence(date(2019, 1, 22), Extent.FORWARD)
+        )
+        assert (stored.id, stored.start_day, stored.start_time) == (
+            "s2",
+            date(2019, 1, 22),
+            time(9),
+        )
+
+    async def test_forward_from_the_first_occurrence_with_the_series_start_unknown(
+        self, client, mocked
+    ):
+        appt = startless_series()
+        appt.start_time, appt.end_time = time(8), time(8, 30)
+        edited = {**series_raw(), "startTime": "08:00:00", "endTime": "08:30:00"}
+        mocked.post(api(JAN), payload=page(edited, days=SERIES_DAYS))
+        stored = await client.update_appointment(
+            appt, scope=Occurrence(date(2019, 1, 8), Extent.FORWARD)
+        )
+        assert (stored.id, stored.start_time) == ("s1", time(8))
+
     @pytest.mark.parametrize(
         "make, scope, match",
         [
@@ -741,6 +783,13 @@ class TestBirthday:
         assert create["recurrence"]["rules"][0]["byMonthDay"] == [-1]
         assert (create["reminders"], create["details"]["birthYear"]) == ([], None)
 
+    async def test_create_takes_a_day_the_model_accepts_and_no_reminders(self, client, mocked):
+        mocked.get(api(FEB), payload=page())
+        mocked.post(api(FEB), payload=page(birthday_raw()))
+        await client.create_birthday("Ann", "2019-02-14", reminders=None)
+        create = posted(mocked, FEB)[0][0]["create"]
+        assert create["startDay"] == "2019-02-14" and "reminders" not in create
+
     async def test_edit_rebuilds_the_rule_and_sends_no_scope(self, client, mocked):
         b = CoziAppointment.model_validate(birthday_raw())
         b.name, b.start_day = "Anne", date(2019, 2, 15)
@@ -804,8 +853,12 @@ class TestBirthday:
         # Cozi would start the series in 2020, off the 2019 page the create is read back from.
         with pytest.raises(CoziValidationError, match="birth_year 2020"):
             await client.create_birthday("Ann", date(2019, 2, 14), birth_year=2020)
+        with pytest.raises(CoziValidationError, match="birth_year 2020"):
+            await client.create_birthday("Ann", "2019-02-14", birth_year="2020")
         with pytest.raises(CoziValidationError, match="Invalid calendar item"):
             await client.create_birthday("Ann", None)
+        with pytest.raises(CoziValidationError, match="Invalid calendar item"):
+            await client.create_birthday("Ann", date(2019, 2, 14), reminders="1440")  # not [1,4,4,0]
         assert sent(mocked, "GET", FEB) == [] and posted(mocked, FEB) == []
 
 
@@ -853,6 +906,14 @@ class TestMeal:
             ]
         ]
         assert (stored.id, stored.meal_slot, stored.start_time) == ("m1", "dinner", time(18))
+
+    @pytest.mark.parametrize("day", ["2019-01-15", datetime(2019, 1, 15)])
+    async def test_create_matches_on_the_day_the_model_accepts(self, client, mocked, day):
+        mocked.get(api(JAN), payload=page())
+        mocked.post(api(JAN), payload=page(raw("other"), meal_raw()))  # two new: the match decides
+        stored = await client.create_meal(day, "dinner", ["Soup"])
+        assert stored.id == "m1"
+        assert posted(mocked)[0][0]["create"]["startDay"] == "2019-01-15"
 
     async def test_update(self, client, mocked):
         meal = CoziAppointment.model_validate(meal_raw())

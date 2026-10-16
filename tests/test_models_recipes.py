@@ -3,6 +3,9 @@
 import copy
 import re
 
+import pytest
+from pydantic import ValidationError
+
 from cozi_client.recipes import CoziIngredient, CoziRecipe
 
 UUID4 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
@@ -77,3 +80,15 @@ def test_nulls_anywhere_do_not_fail_a_read():
         {"name": None, "ingredients": None, "photos": None, "tags": None, "ingredientsX": None}
     )
     assert recipe.to_wire() == {"name": None, "ingredients": None, "photos": None, "tags": None, "ingredientsX": None}
+
+
+def test_assignment_is_validated():
+    recipe = CoziRecipe.model_validate(STORED)
+    with pytest.raises(ValidationError):
+        recipe.ingredients = ["salt"]
+    with pytest.raises(ValidationError):
+        recipe.tags = {"has-folder": "Dinner"}
+    recipe.ingredients = [{"name": "x"}]
+    (ingredient,) = recipe.ingredients
+    assert UUID4.fullmatch(ingredient.ingredient_id)
+    assert recipe.to_wire() == {**STORED, "ingredients": [{"ingredientId": ingredient.ingredient_id, "name": "x"}]}

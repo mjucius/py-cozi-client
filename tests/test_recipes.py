@@ -9,6 +9,7 @@ import pytest
 from cozi_client.exceptions import (
     APIError,
     CoziValidationError,
+    ResourceNotFoundError,
     ResponseParseError,
     WriteVerificationError,
 )
@@ -122,6 +123,8 @@ async def test_create_recipe_rejects_non_str_category(client, mocked):
 
 async def test_update_recipe_round_trips_the_stored_object(client, mocked):
     mocked.post(api(RECIPES), payload=STORED)
+    # The existence check reads the box raw: an unrelated recipe that would not parse is fine.
+    mocked.get(api(RECIPES), payload=[{"recipeBoxId": "other", "ingredients": "not a list"}, STORED])
     recipe = stored()
     recipe.name = "Stew"
     recipe.ingredients = [*recipe.ingredients, CoziIngredient(ingredient_id="i3", name="pepper")]
@@ -134,6 +137,19 @@ async def test_update_recipe_round_trips_the_stored_object(client, mocked):
         "title": "Stew",
         "ingredients": [*STORED["ingredients"], {"ingredientId": "i3", "name": "pepper"}],
     }
+    assert len(sent(mocked, "GET", RECIPES)) == 1
+
+
+@pytest.mark.parametrize(
+    "box,error",
+    [([{"recipeBoxId": "other"}, "junk"], ResourceNotFoundError), ({"error": "x"}, ResponseParseError)],
+)
+async def test_update_of_a_deleted_recipe_raises(client, mocked, box, error):
+    # Live: a POST to a deleted recipeBoxId answers 200 with that id and stores nothing.
+    mocked.post(api(RECIPES), payload=STORED)
+    mocked.get(api(RECIPES), payload=box)
+    with pytest.raises(error, match="does not exist|Expected a list"):
+        await client.update_recipe(stored())
 
 
 async def test_update_recipe_rejects_hand_built_and_bad_ids_before_io(client, mocked):
@@ -248,6 +264,7 @@ PHOTO = "/2103/{acct}/food/recipe/rb1/photo"
 
 
 async def test_upload_recipe_photo_then_resaves_with_photo_first(client, mocked):
+    mocked.get(api(RECIPES), payload=[STORED], repeat=True)
     mocked.post(api(PHOTO), payload={"thumbUrl": "t1", "viewUrl": "v1"})
     mocked.post(api(RECIPES), payload=STORED)
     await client.upload_recipe_photo(stored(), b"\x89PNG", "pixel.png")
@@ -260,12 +277,21 @@ async def test_upload_recipe_photo_then_resaves_with_photo_first(client, mocked)
     (body,) = bodies(mocked, "POST", RECIPES)
     assert body["photos"] == [{"thumbUrl": "t1", "viewUrl": "v1"}, *STORED["photos"]]
     assert body == {**STORED, "title": "Soup", "photos": body["photos"]}
+    assert len(sent(mocked, "GET", RECIPES)) == 2  # before the upload, and after the re-save
+
+
+async def test_upload_to_a_deleted_recipe_raises_before_uploading(client, mocked):
+    mocked.get(api(RECIPES), payload=[])
+    with pytest.raises(ResourceNotFoundError, match="does not exist"):
+        await client.upload_recipe_photo(stored(), b"x", "a.png")
+    assert sent(mocked, "POST", PHOTO) == [] and sent(mocked, "POST", RECIPES) == []
 
 
 async def test_photo_size_cap_is_inclusive_and_checked_before_io(client, mocked):
     with pytest.raises(CoziValidationError, match="at most"):
         await client.upload_recipe_photo(stored(), b"\0" * (MAX_PHOTO_BYTES + 1), "big.png")
     assert sent(mocked, "POST", PHOTO) == []
+    mocked.get(api(RECIPES), payload=[STORED], repeat=True)
     mocked.post(api(PHOTO), payload={"thumbUrl": "t1"})
     mocked.post(api(RECIPES), payload=STORED)
     await client.upload_recipe_photo(stored(), b"\0" * MAX_PHOTO_BYTES, "max.png")
@@ -291,6 +317,7 @@ async def test_upload_refuses_a_recipe_the_resave_would_refuse_before_uploading(
 
 
 async def test_upload_non_object_answer_raises_and_does_not_resave(client, mocked):
+    mocked.get(api(RECIPES), payload=[STORED])
     mocked.post(api(PHOTO), status=204)
     with pytest.raises(ResponseParseError):
         await client.upload_recipe_photo(stored(), b"x", "a.png")
@@ -319,3 +346,26 @@ async def test_add_recipe_to_list_validates_before_any_add(client):
     with pytest.raises(CoziValidationError):
         await client.add_recipe_to_list(CoziRecipe.model_validate({**STORED, "name": ""}), "l1")
     assert client.add_item.await_count == 0
+
+
+async def test_add_recipe_to_list_refuses_a_non_ingredient_entry(client, mocked):
+    # In-place .append is not seen by validate_assignment.
+    recipe = stored()
+    recipe.ingredients.append("pepper")
+    with pytest.raises(CoziValidationError, match="CoziIngredient"):
+        await client.add_recipe_to_list(recipe, "l1")
+    assert len(mocked.requests) == 1  # the login only
+
+
+ITEMS = "/2004/{acct}/list/l1/item/"
+
+
+async def test_add_recipe_to_list_refuses_a_header_like_line_before_any_add(client, mocked):
+    # The real add_item: it would refuse "A" (Cozi stores it as a header) only after
+    # the header and "water" were already on the list.
+    mocked.post(api(ITEMS), payload={"itemId": "h", "text": "SOUP", "itemType": "header"})
+    mocked.post(api(ITEMS), payload={"itemId": "w", "text": "water"})
+    recipe = CoziRecipe.model_validate({**STORED, "ingredients": [{"name": "water"}, {"name": "A"}]})
+    with pytest.raises(CoziValidationError, match="section header"):
+        await client.add_recipe_to_list(recipe, "l1")
+    assert sent(mocked, "POST", ITEMS) == []

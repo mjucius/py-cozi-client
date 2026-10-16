@@ -215,6 +215,11 @@ class TestAddItem:
             ("L1", "Milk", True, False),
             ("L1", "2024", 0, True),
             ("L1", "A", 0, False),
+            # A non-bool header would send one kind and verify against another:
+            # the write lands, then a false WriteVerificationError invites a retry.
+            ("L1", "Milk", 0, None),
+            ("L1", "Milk", 0, "yes"),
+            ("L1", "Milk", 0, 1),
         ],
     )
     async def test_rejects_before_io(self, client, mocked, list_id, text, position, header):
@@ -263,6 +268,8 @@ class TestItemUpdates:
             lambda c: c.update_item_text("../x", "i1", "t"),
             lambda c: c.update_item_text("L1", "i1", "  "),
             lambda c: c.update_item_text("L1", "i?x", "t"),
+            lambda c: c.update_item_text("L1", "i1", "Milk", header=None),
+            lambda c: c.update_item_text("L1", "i1", "Milk", header="yes"),
         ],
     )
     async def test_rejects_before_io(self, client, mocked, call):
@@ -372,6 +379,12 @@ class TestDeleteAndRemove:
         assert await client.remove_items("L1", []) is True
         assert requests_made(mocked) == []
 
+    @pytest.mark.parametrize("ids", [{"a"}, ("a",), (i for i in ["a"])])
+    async def test_any_iterable_of_ids_works(self, client, mocked, ids):
+        mocked.patch(api(L1), payload={**RAW, "items": []})
+        assert await client.remove_items("L1", ids) is True
+        assert sent(mocked, "PATCH", L1)[0]["json"] == {"operations": [{"op": "remove", "path": "/items/a"}]}
+
     @pytest.mark.parametrize(
         "list_id, item_ids",
         [
@@ -380,6 +393,9 @@ class TestDeleteAndRemove:
             ("L1", ["ok", "../x"]),
             ("L1", ["a~1b"]),
             ("L1", ["a/b"]),
+            # Not iterable: must be a CoziValidationError, not a bare TypeError.
+            ("L1", None),
+            ("L1", 5),
         ],
     )
     async def test_rejects_before_io(self, client, mocked, list_id, item_ids):

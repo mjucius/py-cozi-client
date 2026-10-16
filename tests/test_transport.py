@@ -3,10 +3,13 @@
 import asyncio
 import logging
 import time
+import traceback
 
 import aiohttp
 import pytest
+from multidict import CIMultiDict, CIMultiDictProxy
 from pydantic import BaseModel
+from yarl import URL
 
 from cozi_client import CoziClient
 from cozi_client._transport import parse_model, parse_models, validate_calendar_period, validate_id
@@ -23,6 +26,7 @@ from cozi_client.exceptions import (
     ResponseParseError,
 )
 from tests.conftest import (
+    API_ROOT,
     AUTH_URL,
     LOGIN_PATH,
     REAUTH_PATH,
@@ -188,6 +192,16 @@ class TestErrorMapping:
         with pytest.raises(ResourceNotFoundError):
             await client._request("DELETE", "/2004/{acct}/list/l1")
 
+    async def test_delete_404_after_500_then_timeout_is_success(self, mocked, auth_response, no_sleep):
+        # The 500 may have been applied; a network error in between must not forget that.
+        url = api("/2004/{acct}/list/l1")
+        mocked.post(AUTH_URL, payload=auth_response)
+        mocked.delete(url, status=500)
+        mocked.delete(url, exception=asyncio.TimeoutError())
+        mocked.delete(url, status=404)
+        async with fresh() as cozi:
+            assert await cozi._request("DELETE", "/2004/{acct}/list/l1") is True
+
 
 class TestNetworkErrors:
     async def test_get_timeout_retried(self, client, mocked, no_sleep):
@@ -207,6 +221,53 @@ class TestNetworkErrors:
         with pytest.raises(NetworkError):
             await client._request("POST", LISTS, json={})
         assert len(sent(mocked, "POST", LISTS)) == 1
+
+    async def test_network_error_never_carries_the_token(self, client, mocked, no_sleep, caplog):
+        # aiohttp's ClientResponseError (an unparseable header, too many redirects) holds
+        # the request headers and URL: the bearer token, or ?auth= on an upload.
+        caplog.set_level(logging.DEBUG, logger="cozi_client")
+        upload = "/2111/{acct}/photo/uploader.json"
+
+        def leaky(method, path, query=""):
+            url = URL(API_ROOT + path.replace("{acct}", TEST_ACCOUNT_ID) + query)
+            headers = CIMultiDictProxy(CIMultiDict(Authorization=f"Bearer {TEST_ACCESS_TOKEN}"))
+            return aiohttp.ClientResponseError(
+                aiohttp.RequestInfo(url, method, headers, url), (), status=400
+            )
+
+        mocked.get(LISTS_URL, exception=leaky("GET", LISTS))
+        mocked.get(LISTS_URL, exception=leaky("GET", LISTS))
+        mocked.post(api(upload), exception=leaky("POST", upload, f"?auth={TEST_ACCESS_TOKEN}"))
+        errors = []
+        with pytest.raises(NetworkError) as info:
+            await client._request("GET", LISTS)
+        errors.append(info.value)
+        with pytest.raises(NetworkError) as info:
+            await client._request("POST", upload, json={}, query_token=True)
+        errors.append(info.value)
+
+        assert len(sent(mocked, "GET", LISTS)) == 2
+        for exc in errors:
+            assert "ClientResponseError 400" in str(exc)
+            assert TEST_ACCESS_TOKEN not in str(exc)
+            assert TEST_ACCESS_TOKEN not in "".join(traceback.format_exception(exc))
+        assert "retrying" in caplog.text
+        assert TEST_ACCESS_TOKEN not in caplog.text
+
+    async def test_injected_raise_for_status_session_keeps_status_handling(
+        self, mocked, auth_response, no_sleep
+    ):
+        mocked.post(AUTH_URL, payload=auth_response)
+        mocked.get(LISTS_URL, status=401)
+        mocked.post(REAUTH_URL, payload=token(2))
+        mocked.get(LISTS_URL, payload=["ok"])
+        mocked.get(LISTS_URL, status=404)
+        async with aiohttp.ClientSession(raise_for_status=True) as session:
+            cozi = CoziClient(TEST_USERNAME, TEST_PASSWORD, session=session)
+            assert await cozi._request("GET", LISTS) == ["ok"]
+            assert sent(mocked, "GET", LISTS)[1]["headers"]["Authorization"] == "Bearer tok-2"
+            with pytest.raises(ResourceNotFoundError):
+                await cozi._request("GET", LISTS)
 
 
 class TestLogin:

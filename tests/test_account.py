@@ -129,6 +129,19 @@ class TestPersons:
             "k@x.com"
         ).model_dump(by_alias=True)
 
+    @pytest.mark.parametrize("email, sent_email", [("  ", ""), (" k@x.com ", "k@x.com")])
+    async def test_create_strips_the_email_before_choosing_defaults(
+        self, client, mocked, email, sent_email
+    ):
+        # "  " is no email: every email channel stays off, as the web would send it.
+        mocked.post(api(PERSONS), status=201, payload=person("p3", sent_email))
+        await client.create_person("Kid", email=email, color_index=0)
+        (body,) = bodies(mocked, "POST", PERSONS)
+        assert (body["email"], body["settings"]) == (
+            sent_email,
+            default_settings(sent_email).model_dump(by_alias=True),
+        )
+
     @pytest.mark.parametrize(
         "kwargs, message",
         [
@@ -136,6 +149,9 @@ class TestPersons:
             ({"name": "Kid", "color_index": True}, "Invalid color index"),
             ({"name": "Kid", "color_index": -1}, "Invalid color index"),
             ({"name": "Kid", "email": None}, "Invalid email"),
+            ({"name": "Kid", "email": "not-an-email"}, "Invalid email"),
+            ({"name": "Kid", "email": "a@x"}, "Invalid email"),
+            ({"name": "Kid", "email": "a b@x.com"}, "Invalid email"),
             ({"name": "Kid", "settings": {"dailyAgenda": {}}}, "settings must be a PersonSettings"),
             (
                 {
@@ -176,10 +192,12 @@ class TestPersons:
         ]
         assert (stored.name, stored.version) == ("Renamed", 4)
 
-    async def test_update_refuses_to_clear_an_email(self, client, mocked):
+    @pytest.mark.parametrize("blank", ["", "   ", None])
+    async def test_update_refuses_to_clear_an_email(self, client, mocked, blank):
+        # Whitespace is a blank email too; sending it would replace the member's login.
         mocked.get(api(PERSONS), payload=[person("p1", "a@x.com"), person("p2", "b@x.com")])
         p = CoziPerson.model_validate(person("p2", "b@x.com"))
-        p.email = ""
+        p.email = blank
         with pytest.raises(CoziValidationError, match="Cannot remove a member.s email"):
             await client.update_person(p)
         assert sent(mocked, "PUT", PERSONS + "p2") == []
@@ -196,6 +214,7 @@ class TestPersons:
             ({"id": "../x"}, "Invalid person_id"),
             ({"settings": None}, "settings must be a PersonSettings"),
             ({"color": None}, "Invalid color index"),
+            ({"email": "not-an-email"}, "Invalid email"),
         ],
     )
     async def test_update_validates_before_any_request(self, client, mocked, change, message):

@@ -121,8 +121,9 @@ class TestDefaultSettings:
             "weeklyAgenda": {"emailEnabled": True},
         }
 
-    def test_without_email_turns_every_email_channel_off(self):
-        assert default_settings("").model_dump(by_alias=True) == {
+    @pytest.mark.parametrize("email", ["", "   "])
+    def test_without_email_turns_every_email_channel_off(self, email):
+        assert default_settings(email).model_dump(by_alias=True) == {
             "calendarItemNotification": {"emailEnabled": False, "pushEnabled": True},
             "calendarItemReminder": {"emailEnabled": False, "pushEnabled": True},
             "dailyAgenda": {"emailEnabled": False},
