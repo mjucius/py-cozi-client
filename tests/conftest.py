@@ -4,6 +4,10 @@ Shared fixtures for the unit suite (aioresponses).
 Every request carries ``?apikey=...``, so mocks are registered with ``api(path)``,
 a regex that matches the path with any query string, and request bodies are read
 back with ``sent(mocked, method, path)``.
+
+aioresponses deep-copies the kwargs it records, so it cannot show that a request
+body object (a multipart FormData, say) was rebuilt per attempt; only the real-socket
+stub (tests/stub_cozi.py) can, since aiohttp refuses to resend a spent FormData.
 """
 
 import re
@@ -46,14 +50,14 @@ def sent(mocked: aioresponses, method: str, path: str, root: str = API_ROOT) -> 
     return calls
 
 
-def sent_query(mocked: aioresponses, method: str, path: str) -> List[Dict[str, str]]:
+def sent_query(mocked: aioresponses, method: str, path: str, root: str = API_ROOT) -> List[Dict[str, str]]:
     """The query string of every request sent to ``method path`` (from the recorded URL)."""
     path = path.replace("{acct}", TEST_ACCOUNT_ID)
     return [
         {k: unquote(v) for k, v in url.query.items()}
         for (m, url), recorded in mocked.requests.items()
         for _ in recorded
-        if m == method.upper() and str(url.with_query(None)) == API_ROOT + path
+        if m == method.upper() and str(url.with_query(None)) == root + path
     ]
 
 

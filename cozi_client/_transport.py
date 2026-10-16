@@ -45,6 +45,10 @@ logger = logging.getLogger("cozi_client")
 ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
+# The web app's upload cap for photos (one shared constant, 2e7, in bundle main.c43180f9).
+MAX_PHOTO_BYTES = 20_000_000
+
+
 def validate_id(value: Any, name: str = "id") -> str:
     """Return ``value`` if it is a well-formed Cozi id, else raise CoziValidationError."""
     # fullmatch, not match: Python's `$` also matches before a trailing newline.
@@ -55,7 +59,8 @@ def validate_id(value: Any, name: str = "id") -> str:
 
 def validate_calendar_period(year: Any, month: Any) -> Tuple[int, int]:
     """Return ``(year, month)`` if both are ints in range; they end up in a URL path."""
-    for name, value, low, high in (("year", year, 1900, 2999), ("month", month, 1, 12)):
+    # Any 4-digit year: Cozi files a birthday under its birth year (1904 when none is given).
+    for name, value, low, high in (("year", year, 1000, 9999), ("month", month, 1, 12)):
         # bool is an int subclass; True would otherwise pass as month 1.
         if isinstance(value, bool) or not isinstance(value, int):
             raise CoziValidationError(f"Invalid {name}: expected an integer, got {value!r}")
@@ -98,7 +103,9 @@ JSON_CONTENT_TYPE = {"Content-Type": "application/json; charset=utf-8"}
 
 def _reason(body: Any) -> str:
     if isinstance(body, dict):
-        for key in ("error", "message"):
+        # Cozi puts the specific reason in `detail` when it sends one (e.g. a failed recipe
+        # import: error is a generic framework sentence, detail says "Could not retrieve recipe.").
+        for key in ("detail", "error", "message"):
             value = body.get(key)
             if isinstance(value, str) and value:
                 return f": {value[:300]}"

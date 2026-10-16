@@ -414,7 +414,7 @@ class TestValidators:
     def test_validate_calendar_period(self):
         assert validate_calendar_period(2024, 12) == (2024, 12)
 
-    @pytest.mark.parametrize("year,month", [(2024, 0), (2024, 13), (1800, 1), ("2024", 1), (2024, True)])
+    @pytest.mark.parametrize("year,month", [(2024, 0), (2024, 13), (999, 1), (10000, 1), ("2024", 1), (2024, True)])
     def test_validate_calendar_period_rejects(self, year, month):
         with pytest.raises(CoziValidationError):
             validate_calendar_period(year, month)

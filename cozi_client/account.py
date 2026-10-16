@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, TypeVar, Union
 import aiohttp
 from pydantic import BaseModel, ConfigDict, Field
 
-from ._transport import JSON_CONTENT_TYPE, Transport, parse_model, parse_models, validate_id
+from ._transport import JSON_CONTENT_TYPE, MAX_PHOTO_BYTES, Transport, parse_model, parse_models, validate_id
 from .exceptions import CoziValidationError, ResourceNotFoundError, ResponseParseError
 
 # The iCal feed id of the whole family (the per-person feeds use person ids).
@@ -29,7 +29,6 @@ HOLIDAY_CALENDARS = {
     "NEWS": "2310831940b8c6ce4943241679e2cbdb1724822e",
 }
 
-MAX_PHOTO_BYTES = 20 * 1024 * 1024
 PHOTO_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
 
 PERSONS = "/2004/{acct}/account/person/"

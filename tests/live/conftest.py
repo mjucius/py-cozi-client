@@ -24,6 +24,7 @@ import pytest
 import pytest_asyncio
 
 from cozi_client import CoziClient
+from cozi_client.exceptions import PermissionDeniedError
 
 PREFIX = "LIVE_TEST_DELETE_ME"
 SANDBOX: List[Tuple[int, int]] = [(2019, 1), (2019, 2), (2019, 3)]
@@ -114,10 +115,17 @@ async def sweep_lists(cozi: CoziClient, domain: str) -> int:
 
 
 async def sweep_recipes(cozi: CoziClient, domain: str) -> int:
-    recipes = await cozi._request("GET", "/2103/{acct}/food/recipe/")
+    try:
+        recipes = await cozi._request("GET", "/2103/{acct}/food/recipe/")
+    except PermissionDeniedError:  # recipe box not available on this plan: nothing to sweep
+        return 0
     removed = 0
     for recipe in recipes if isinstance(recipes, list) else []:
-        if isinstance(recipe, dict) and owned_by(domain, recipe.get("name"), recipe.get("title")):
+        if (
+            isinstance(recipe, dict)
+            and isinstance(recipe.get("recipeBoxId"), str)
+            and owned_by(domain, recipe.get("name"), recipe.get("title"))
+        ):
             await cozi._request("DELETE", f"/2103/{{acct}}/food/recipe/{recipe['recipeBoxId']}")
             removed += 1
     return removed

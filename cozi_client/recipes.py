@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, NoReturn, Optional, Union
 import aiohttp
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ._transport import ID_PATTERN, Transport, _reason, logger, parse_model, parse_models, validate_id
+from ._transport import ID_PATTERN, MAX_PHOTO_BYTES, Transport, _reason, logger, parse_model, parse_models, validate_id
 from .exceptions import APIError, CoziException, CoziValidationError, ResponseParseError, WriteVerificationError
 
 if TYPE_CHECKING:
@@ -22,8 +22,6 @@ if TYPE_CHECKING:
 RECIPES = "/2103/{acct}/food/recipe/"
 SCRAPE = "/2103/{acct}/food/scrape/recipe/"
 CURATED = "/2103/{acct}/food/curated/recipe/"
-# The web client refuses larger photos before uploading (yxWn.tc = 2e7 bytes).
-MAX_PHOTO_BYTES = 20_000_000
 
 
 class CoziIngredient(BaseModel):

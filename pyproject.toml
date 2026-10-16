@@ -67,3 +67,7 @@ markers = [
 filterwarnings = [
     "error",
 ]
+
+[tool.mypy]
+# Lets mypy check model construction by field name, e.g. CoziAppointment(subject=..., start_day=...).
+plugins = ["pydantic.mypy"]
