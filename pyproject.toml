@@ -4,25 +4,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py-cozi-client"
-version = "2.1.0"
+version = "3.0.0"
 authors = [
     {name = "Matthew Jucius"}
 ]
 description = "Async Python client for the Cozi Family Organizer API with Pydantic models, full type safety and comprehensive error handling"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.7"
+requires-python = ">=3.10"
 keywords = ["cozi", "family organizer", "calendar", "shopping list", "todo", "api client", "async", "pydantic"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Home Automation",
     "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -53,12 +52,18 @@ dev = [
 ]
 
 [tool.setuptools]
-py-modules = ["cozi_client", "models", "utils", "exceptions"]
+packages = ["cozi_client"]
+
+[tool.setuptools.package-data]
+cozi_client = ["py.typed"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-v --strict-markers"
+addopts = "-v --strict-markers -m 'not live'"
+markers = [
+    "live: talks to the real Cozi API with COZI_USERNAME/COZI_PASSWORD (run with -m live)",
+]
 filterwarnings = [
     "error",
 ]
