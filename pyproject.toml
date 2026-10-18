@@ -1,28 +1,27 @@
 [build-system]
-requires = ["setuptools>=45", "wheel"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "py-cozi-client"
-version = "2.1.0"
+version = "3.0.0"
 authors = [
     {name = "Matthew Jucius"}
 ]
 description = "Async Python client for the Cozi Family Organizer API with Pydantic models, full type safety and comprehensive error handling"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.7"
+requires-python = ">=3.10"
 keywords = ["cozi", "family organizer", "calendar", "shopping list", "todo", "api client", "async", "pydantic"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Home Automation",
     "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -36,29 +35,31 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.0",
     "aioresponses>=0.7.4",
-    # Test-only ceiling, deliberately NOT applied to the runtime dependency
-    # above. aiohttp 3.14 made `stream_writer` a required keyword argument of
-    # ClientResponse.__init__; aioresponses constructs ClientResponse itself and
-    # has not caught up as of 0.7.9, so every mocked request raises TypeError.
-    # The library itself is unaffected -- verified on aiohttp 3.14.3 against a
-    # real aiohttp server: authenticate, get_lists, add_item and
-    # update_item_text all pass. Only the test double is broken, so users are
-    # left free to install the newest aiohttp. Drop this once aioresponses
-    # supports 3.14.
+    # Test-only cap: aioresponses breaks on aiohttp 3.14 (stream_writer); the runtime dependency stays
+    # unpinned. Drop it once aioresponses supports 3.14.
     "aiohttp<3.14",
     "black>=22.0",
     "mypy>=0.950",
 ]
 
 [tool.setuptools]
-py-modules = ["cozi_client", "models", "utils", "exceptions"]
+packages = ["cozi_client"]
+
+[tool.setuptools.package-data]
+cozi_client = ["py.typed"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-v --strict-markers"
+addopts = "-v --strict-markers -m 'not live'"
+markers = [
+    "live: talks to the real Cozi API with COZI_USERNAME/COZI_PASSWORD (run with -m live)",
+]
 filterwarnings = [
     "error",
 ]
+
+[tool.mypy]
+# Lets mypy check model construction by field name, e.g. CoziAppointment(subject=..., start_day=...).
+plugins = ["pydantic.mypy"]

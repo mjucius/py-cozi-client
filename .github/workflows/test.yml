@@ -15,14 +15,14 @@ jobs:
   test:
     name: pytest (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    # The suite takes seconds; a hang should not hold the runner for GitHub's 6-hour default.
+    timeout-minutes: 10
     strategy:
       # Report every version's result; one old version failing should not hide
       # whether the others are fine.
       fail-fast: false
       matrix:
-        # 3.9 is EOL (2025-10-31) and pydantic 2.13 already requires >=3.9, so
-        # the floor tested here is 3.10. Note this is stricter than the
-        # `requires-python = ">=3.7"` declared in pyproject.toml, which is stale.
+        # Matches requires-python = ">=3.10" in pyproject.toml.
         python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
@@ -47,13 +47,22 @@ jobs:
       - name: Run tests
         run: pytest
 
+      - name: Examples compile
+        run: python -m py_compile examples/*.py
+
+      - name: Package imports even when generic module names are taken
+        # 2.x shipped top-level modules named models/utils/exceptions, which clashed
+        # with anything else of the same name. 3.0 is a single cozi_client package.
+        run: python -c "import sys, types; sys.modules['models'] = types.ModuleType('models'); import cozi_client; print(cozi_client.__version__)"
+
   aiohttp-latest:
     # Early warning for the failure mode that broke the 2.1.0 release: the dev
     # extra pins `aiohttp<3.14` because aioresponses cannot build a
     # ClientResponse on 3.14, so every matrix job above tests against a capped
     # aiohttp and would never notice a genuine incompatibility. This job removes
-    # the cap and runs the tests that do not depend on aioresponses -- including
-    # tests/test_real_server.py, which drives the client over a real socket.
+    # the cap and runs the tests that do not depend on aioresponses: the model
+    # tests and the contract tests, which drive the client over a real socket
+    # against tests/stub_cozi.py.
     name: newest aiohttp (early warning)
     runs-on: ubuntu-latest
 
@@ -76,22 +85,4 @@ jobs:
         # No aioresponses in these files. A failure here means aiohttp actually
         # broke the client and users installing it today are affected -- worth
         # a red run.
-        run: |
-          pytest tests/test_real_server.py tests/test_models.py \
-                 tests/test_utils.py tests/test_exceptions.py
-
-      - name: Can the aiohttp cap be dropped yet?
-        # Expected to fail until aioresponses supports aiohttp 3.14. When this
-        # starts passing, remove the `aiohttp<3.14` pin from the dev extra in
-        # pyproject.toml and delete this step.
-        id: probe
-        continue-on-error: true
-        run: pytest tests/test_cozi_client.py -q
-
-      - name: Report cap status
-        run: |
-          if [ "${{ steps.probe.outcome }}" = "success" ]; then
-            echo "::notice::aioresponses now works with aiohttp>=3.14 — drop the \`aiohttp<3.14\` pin from the dev extra in pyproject.toml."
-          else
-            echo "::notice::aioresponses still cannot build responses on aiohttp>=3.14; the dev-extra cap is still required."
-          fi
+        run: pytest tests/test_contract_*.py tests/test_models_*.py tests/test_exceptions.py
