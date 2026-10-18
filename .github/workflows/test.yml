@@ -43,7 +43,9 @@ jobs:
         run: pip list | grep -Ei "aiohttp|aioresponses|pydantic|pytest"
 
       - name: Run tests
-        run: pytest
+        # The suite takes seconds. If it hangs, SIGABRT after 5 min makes faulthandler print every
+        # thread's stack instead of holding the runner for GitHub's 6-hour default.
+        run: timeout -s ABRT 300 python -X faulthandler -m pytest
 
       - name: Examples compile
         run: python -m py_compile examples/*.py
