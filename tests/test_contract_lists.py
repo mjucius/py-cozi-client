@@ -5,10 +5,9 @@ from aiohttp import web
 
 from cozi_client.exceptions import ResourceNotFoundError
 from cozi_client.lists import CoziItem, ItemStatus, ListType
+from tests.conftest import L1, LISTS
 from tests.test_models_lists import RAW
 
-LISTS = "/2004/{acct}/list/"
-L1 = LISTS + "L1"
 LIST = {**RAW, "items": []}
 ITEM = {"itemId": "i1", "text": "Milk", "itemType": None, "status": "incomplete"}
 
@@ -48,9 +47,9 @@ async def test_every_endpoint_at_its_exact_path(stub):
         assert [x.id for x in await cozi.reorder_list("L1", 0)] == ["L1"]
         assert (await cozi.add_item("L1", "produce", header=True)).is_header
         assert (await cozi.mark_item("L1", "i1", ItemStatus.COMPLETE)).status is ItemStatus.COMPLETE
-        assert await cozi.delete_item("L1", "i1") is True
-        assert await cozi.remove_items("L1", ["i2"]) is True
-        assert await cozi.delete_list("L1") is True
+        await cozi.delete_item("L1", "i1")
+        await cozi.remove_items("L1", ["i2"])
+        await cozi.delete_list("L1")
 
     acct = stub.ACCOUNT
     base = f"/api/ext/2004/{acct}/list/"

@@ -14,11 +14,9 @@ from cozi_client.exceptions import (
     WriteVerificationError,
 )
 from cozi_client.lists import CoziItem, CoziList, ItemStatus, ListType
-from tests.conftest import api, sent, sent_query
+from tests.conftest import L1, LISTS, api, sent, sent_query
 from tests.test_models_lists import RAW
 
-LISTS = "/2004/{acct}/list/"
-L1 = LISTS + "L1"
 ITEMS = L1 + "/item/"
 I1 = ITEMS + "i1"
 
@@ -90,13 +88,13 @@ class TestCreateRenameDelete:
 
     async def test_delete(self, client, mocked):
         mocked.delete(api(L1), status=204)
-        assert await client.delete_list("L1") is True
+        await client.delete_list("L1")
         assert requests_made(mocked) == [("DELETE", "/2004/acct-123/list/L1")]
 
     async def test_delete_retried_after_5xx_that_finds_nothing_is_success(self, client, mocked, no_sleep):
         mocked.delete(api(L1), status=500)
         mocked.delete(api(L1), status=404)
-        assert await client.delete_list("L1") is True
+        await client.delete_list("L1")
         assert len(sent(mocked, "DELETE", L1)) == 2
 
 
@@ -339,7 +337,7 @@ async def test_text_is_sent_stripped_as_cozi_stores_it(client, mocked, call, met
 class TestDeleteAndRemove:
     async def test_delete_item(self, client, mocked):
         mocked.delete(api(I1), status=204)
-        assert await client.delete_item("L1", "i1") is True
+        await client.delete_item("L1", "i1")
         assert requests_made(mocked) == [("DELETE", "/2004/acct-123/list/L1/item/i1")]
 
     async def test_delete_item_404(self, client, mocked):
@@ -349,7 +347,7 @@ class TestDeleteAndRemove:
 
     async def test_remove_items(self, client, mocked):
         mocked.patch(api(L1), payload={**RAW, "items": [item("Keep", item_id="k")]})
-        assert await client.remove_items("L1", ["a", "b"]) is True
+        await client.remove_items("L1", ["a", "b"])
         assert sent(mocked, "PATCH", L1)[0]["json"] == {
             "operations": [
                 {"op": "remove", "path": "/items/a"},
@@ -376,13 +374,13 @@ class TestDeleteAndRemove:
         assert e.value.status_code == 400
 
     async def test_empty_is_a_no_op(self, client, mocked):
-        assert await client.remove_items("L1", []) is True
+        await client.remove_items("L1", [])
         assert requests_made(mocked) == []
 
     @pytest.mark.parametrize("ids", [{"a"}, ("a",), (i for i in ["a"])])
     async def test_any_iterable_of_ids_works(self, client, mocked, ids):
         mocked.patch(api(L1), payload={**RAW, "items": []})
-        assert await client.remove_items("L1", ids) is True
+        await client.remove_items("L1", ids)
         assert sent(mocked, "PATCH", L1)[0]["json"] == {"operations": [{"op": "remove", "path": "/items/a"}]}
 
     @pytest.mark.parametrize(

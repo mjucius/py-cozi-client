@@ -5,8 +5,7 @@ import asyncio
 import pytest
 
 from cozi_client.exceptions import AuthenticationError, CoziValidationError, ResourceNotFoundError
-
-LISTS = "/2004/{acct}/list/"
+from tests.conftest import LISTS
 
 
 async def test_login_sets_refresh_cookie_and_every_request_has_apikey(stub):

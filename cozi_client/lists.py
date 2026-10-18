@@ -14,11 +14,20 @@ Things Cozi does that the endpoints don't make obvious (all seen live on 2026-10
 """
 
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Type, Union
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Type, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ._transport import Transport, logger, parse_model, parse_models, validate_id
+from ._transport import (
+    Transport,
+    logger,
+    parse_model,
+    parse_models,
+    validate_id,
+    validate_ids,
+    validate_int,
+    validate_text,
+)
 from .exceptions import (
     CoziException,
     CoziValidationError,
@@ -84,21 +93,6 @@ def _value(enum: Type[Enum], value: Any, name: str) -> str:
         raise CoziValidationError(f"Invalid {name}: {value!r}") from None
 
 
-def _text(value: Any, name: str) -> str:
-    # Cozi strips item text and list titles (str.strip() semantics, seen live), so
-    # the stripped text is what gets sent, cased and verified.
-    if not isinstance(value, str) or not value.strip():
-        raise CoziValidationError(f"{name} cannot be empty")
-    return value.strip()
-
-
-def _index(value: Any, name: str) -> int:
-    # bool is an int subclass; True would otherwise pass as 1.
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise CoziValidationError(f"Invalid {name}: expected an integer >= 0, got {value!r}")
-    return value
-
-
 def _item_text(text: str, header: bool) -> str:
     """
     The text that gives the item the kind the caller asked for.
@@ -158,7 +152,7 @@ class ListsMixin(Transport):
     async def create_list(self, title: str, list_type: Union[ListType, str]) -> CoziList:
         """Create an empty list. Cozi puts it after the other lists of its type."""
         body = {
-            "title": _text(title, "List title"),
+            "title": validate_text(title, "List title"),
             "listType": _value(ListType, list_type, "list_type"),
         }
         return parse_model(CoziList, await self._request("POST", LISTS, json=body))
@@ -166,7 +160,7 @@ class ListsMixin(Transport):
     async def rename_list(self, list_id: str, title: str) -> CoziList:
         """Change only the title. A title-only PUT leaves the items and the type alone."""
         list_id = validate_id(list_id, "list_id")
-        title = _text(title, "List title")
+        title = validate_text(title, "List title")
         lst = await self._put_list(list_id, {"title": title})
         if lst.title != title:
             raise WriteVerificationError(
@@ -190,10 +184,9 @@ class ListsMixin(Transport):
         list_id = validate_id(lst.id, "list_id")
         return await self._put_list(list_id, lst.model_dump(by_alias=True, mode="json", exclude_unset=True))
 
-    async def delete_list(self, list_id: str) -> bool:
+    async def delete_list(self, list_id: str) -> None:
         """Delete a list and its items."""
         await self._request("DELETE", LISTS + validate_id(list_id, "list_id"))
-        return True
 
     async def reorder_list(self, list_id: str, new_index: int) -> List[CoziList]:
         """
@@ -205,7 +198,7 @@ class ListsMixin(Transport):
         past the end moves the list last. An unknown list id gets a 500.
         """
         list_id = validate_id(list_id, "list_id")
-        new_index = _index(new_index, "new_index")
+        new_index = validate_int(new_index, "new_index")
         body = {"operations": [{"op": "move", "from": list_id, "path": str(new_index)}]}
         return parse_models(CoziList, await self._request("PATCH", LISTS, json=body))
 
@@ -217,8 +210,8 @@ class ListsMixin(Transport):
         case, and an all-caps plain item in sentence case.
         """
         list_id = validate_id(list_id, "list_id")
-        text = _item_text(_text(text, "Item text"), header)
-        body: Dict[str, Any] = {"text": text, "position": _index(position, "position")}
+        text = _item_text(validate_text(text, "Item text"), header)
+        body: Dict[str, Any] = {"text": text, "position": validate_int(position, "position")}
         if header:
             body["itemType"] = "header"  # ignored by Cozi; sent as the web client sends it
         item = parse_model(CoziItem, await self._request("POST", f"{LISTS}{list_id}/item/", json=body))
@@ -230,7 +223,7 @@ class ListsMixin(Transport):
         Change an item's text. Afterwards the item is a header if ``header`` is set,
         and a plain item otherwise, because Cozi decides the kind from the new text.
         """
-        text = _item_text(_text(text, "Item text"), header)
+        text = _item_text(validate_text(text, "Item text"), header)
         item = await self._put_item(list_id, item_id, {"text": text})
         _verify_item(item, text, header, "text update")
         return item
@@ -247,20 +240,19 @@ class ListsMixin(Transport):
             )
         return item
 
-    async def delete_item(self, list_id: str, item_id: str) -> bool:
+    async def delete_item(self, list_id: str, item_id: str) -> None:
         """
         Delete one item, as the web client does.
 
         Cozi answers 204 for any well-formed uuid, even one that is not on the list,
-        so True does not prove the item existed. An id that is not a uuid gets 404
+        so success does not prove the item existed. An id that is not a uuid gets 404
         (ResourceNotFoundError).
         """
         list_id = validate_id(list_id, "list_id")
         item_id = validate_id(item_id, "item_id")
         await self._request("DELETE", f"{LISTS}{list_id}/item/{item_id}")
-        return True
 
-    async def remove_items(self, list_id: str, item_ids: List[str]) -> bool:
+    async def remove_items(self, list_id: str, item_ids: List[str]) -> None:
         """
         Remove several items in one PATCH, as "delete checked items" does.
 
@@ -268,14 +260,11 @@ class ListsMixin(Transport):
         against the list Cozi returns, raises WriteVerificationError.
         """
         list_id = validate_id(list_id, "list_id")
-        # A str would iterate one id per character; None or an int would raise TypeError.
-        if isinstance(item_ids, str) or not isinstance(item_ids, Iterable):
-            raise CoziValidationError("item_ids must be a list of ids")
         # Each id lands in a JSON-Pointer path. validate_id rules out "/" and "~",
         # which could otherwise point the remove at a different node.
-        ids = [validate_id(i, "item_id") for i in item_ids]
+        ids = validate_ids(item_ids, "item_ids")
         if not ids:
-            return True
+            return
         operations = [{"op": "remove", "path": f"/items/{i}"} for i in ids]
         lst = parse_model(
             CoziList,
@@ -290,7 +279,6 @@ class ListsMixin(Transport):
                 f"{list_id}: {', '.join(survived)}",
                 response_data=lst.model_dump(by_alias=True, mode="json"),
             )
-        return True
 
     # ------------------------------------------------------------- upsert guard
 

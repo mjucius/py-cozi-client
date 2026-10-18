@@ -84,19 +84,3 @@ jobs:
         # broke the client and users installing it today are affected -- worth
         # a red run.
         run: pytest tests/test_contract_*.py tests/test_models_*.py tests/test_exceptions.py
-
-      - name: Can the aiohttp cap be dropped yet?
-        # Expected to fail until aioresponses supports aiohttp 3.14. When this
-        # starts passing, remove the `aiohttp<3.14` pin from the dev extra in
-        # pyproject.toml and delete this step.
-        id: probe
-        continue-on-error: true
-        run: pytest -q
-
-      - name: Report cap status
-        run: |
-          if [ "${{ steps.probe.outcome }}" = "success" ]; then
-            echo "::notice::aioresponses now works with aiohttp>=3.14 — drop the \`aiohttp<3.14\` pin from the dev extra in pyproject.toml."
-          else
-            echo "::notice::aioresponses still cannot build responses on aiohttp>=3.14; the dev-extra cap is still required."
-          fi

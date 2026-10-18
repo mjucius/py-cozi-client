@@ -99,7 +99,7 @@ attempt. `client.account_id` is the household id once logged in.
   Items and type are left alone.
 - `await client.update_list(lst: CoziList) -> CoziList`: write back a whole list (reorder
   items, check or uncheck them all). Read [update_list replaces the whole list](#update_list-replaces-the-whole-list) first.
-- `await client.delete_list(list_id: str) -> bool`: delete a list and its items.
+- `await client.delete_list(list_id: str) -> None`: delete a list and its items.
 - `await client.reorder_list(list_id: str, new_index: int) -> list[CoziList]`: move a list to
   `new_index` among the lists of its own type (0 is first; past the end moves it last).
   Returns every list in the new order.
@@ -109,9 +109,9 @@ attempt. `client.account_id` is the household id once logged in.
   change an item's text. Afterwards it is a header only if `header=True`.
 - `await client.mark_item(list_id: str, item_id: str, status: ItemStatus | str) -> CoziItem`:
   check (`ItemStatus.COMPLETE`) or uncheck (`ItemStatus.INCOMPLETE`) an item.
-- `await client.delete_item(list_id: str, item_id: str) -> bool`: delete one item. Cozi answers
-  success for any well-formed uuid, so `True` does not prove the item existed.
-- `await client.remove_items(list_id: str, item_ids: list[str]) -> bool`: remove several items
+- `await client.delete_item(list_id: str, item_id: str) -> None`: delete one item. Cozi answers
+  success for any well-formed uuid, so success does not prove the item existed.
+- `await client.remove_items(list_id: str, item_ids: list[str]) -> None`: remove several items
   in one request, as "delete checked items" does. Raises `WriteVerificationError` if any id is
   still on the list afterwards.
 
@@ -144,7 +144,7 @@ Appointments:
 - `await client.update_appointment(appt: CoziAppointment, scope: Scope = None, notify: Sequence[str] | None = None) -> CoziAppointment`:
   replace an appointment or birthday with `appt` and return what Cozi stored. Start from an item
   read with `get_calendar`. Reminders are re-sent unless they are `None`; `[]` clears them.
-- `await client.delete_appointment(appt: CoziAppointment, scope: Scope = None, notify: Sequence[str] | None = None) -> bool`:
+- `await client.delete_appointment(appt: CoziAppointment, scope: Scope = None, notify: Sequence[str] | None = None) -> None`:
   delete an appointment or birthday.
 
 Recurring series. On a series, `update_appointment` and `delete_appointment` need a `scope`,
@@ -202,7 +202,7 @@ Birthdays and meals:
   `items` are dish texts, or `(text, recipe_box_id)` for a dish from the recipe box.
 - `await client.update_meal(meal: CoziAppointment) -> CoziAppointment`: replace a meal read
   from `get_calendar`.
-- `await client.delete_meal(meal: CoziAppointment) -> bool`: delete a meal read from `get_calendar`.
+- `await client.delete_meal(meal: CoziAppointment) -> None`: delete a meal read from `get_calendar`.
 
 `CoziAppointment` fields: `id`, `subject`, `start_day`, `start_time` and `end_time` (both
 `None` for an all-day item), `date_span`, `attendees` (person ids), `location`, `notes`,

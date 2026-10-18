@@ -12,7 +12,7 @@ import json as jsonlib
 import logging
 import re
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Type, TypeVar
 
 import aiohttp
 from pydantic import BaseModel
@@ -57,16 +57,58 @@ def validate_id(value: Any, name: str = "id") -> str:
     return value
 
 
+def validate_ids(ids: Any, name: str) -> List[str]:
+    """Return ``ids`` as a list of well-formed Cozi ids, else raise CoziValidationError."""
+    # A str would iterate one id per character; None or an int would raise TypeError.
+    if isinstance(ids, str) or not isinstance(ids, Iterable):
+        raise CoziValidationError(f"{name} must be a list of ids")
+    return [validate_id(i, name) for i in ids]
+
+
+def validate_text(value: Any, name: str) -> str:
+    """Return ``value`` stripped, or raise CoziValidationError if it is not a str or is blank."""
+    # Where Cozi strips the field (item text, list titles: str.strip() semantics, seen live)
+    # the caller sends the stripped text; elsewhere it only validates and sends the original.
+    if not isinstance(value, str) or not value.strip():
+        raise CoziValidationError(f"{name} cannot be empty")
+    return value.strip()
+
+
+def validate_int(value: Any, name: str, low: int = 0, high: Optional[int] = None) -> int:
+    """Return ``value`` if it is an int in ``[low, high]`` (no upper bound when None)."""
+    # bool is an int subclass; True would otherwise pass as 1.
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise CoziValidationError(f"Invalid {name}: expected an integer, got {value!r}")
+    if high is None:
+        if value < low:
+            raise CoziValidationError(f"Invalid {name}: expected an integer >= {low}, got {value!r}")
+    elif not low <= value <= high:
+        raise CoziValidationError(f"Invalid {name}: {value} is not in {low}-{high}")
+    return value
+
+
+def validate_photo(data: Any) -> bytes:
+    """Return ``data`` as bytes if it is a non-empty photo within MAX_PHOTO_BYTES."""
+    if not isinstance(data, (bytes, bytearray)) or not data:
+        raise CoziValidationError("Photo data must be non-empty bytes")
+    if len(data) > MAX_PHOTO_BYTES:
+        raise CoziValidationError("Photo is larger than 20 MB")
+    return bytes(data)
+
+
 def validate_calendar_period(year: Any, month: Any) -> Tuple[int, int]:
     """Return ``(year, month)`` if both are ints in range; they end up in a URL path."""
     # Any 4-digit year: Cozi files a birthday under its birth year (1904 when none is given).
     for name, value, low, high in (("year", year, 1000, 9999), ("month", month, 1, 12)):
-        # bool is an int subclass; True would otherwise pass as month 1.
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise CoziValidationError(f"Invalid {name}: expected an integer, got {value!r}")
-        if not low <= value <= high:
-            raise CoziValidationError(f"Invalid {name}: {value} is not in {low}-{high}")
+        validate_int(value, name, low, high)
     return year, month
+
+
+def _expect(kind: type, body: Any, what: str) -> Any:
+    # An empty 2xx decodes to True; never hand that back as data. No body in the message.
+    if not isinstance(body, kind):
+        raise ResponseParseError(f"Expected {what} as a {kind.__name__}, got {type(body).__name__}")
+    return body
 
 
 M = TypeVar("M", bound=BaseModel)
@@ -132,7 +174,6 @@ class Transport:
     }
     # Renew this many seconds before the token expires (the web client's margin).
     REFRESH_MARGIN = 180
-    MIN_REQUEST_INTERVAL = 0.1
 
     def __init__(
         self,
@@ -166,9 +207,6 @@ class Transport:
         # arrived while it was in flight.
         self._token_generation = 0
         self._auth_lock = asyncio.Lock()
-
-        self._gate_lock = asyncio.Lock()
-        self._last_request_time = 0.0
 
     async def __aenter__(self):
         await self._ensure_session()
@@ -251,12 +289,10 @@ class Transport:
 
     async def request_password_reset(self, email: str) -> None:
         """Ask Cozi to email a password-reset link (no login needed)."""
-        if not isinstance(email, str) or not email.strip():
-            raise CoziValidationError("Email cannot be empty")
         await self._request(
             "POST",
             "/2110/household/password/resetrequest",
-            json={"email": email.strip()},
+            json={"email": validate_text(email, "Email")},
             auth=False,
         )
 
@@ -349,17 +385,24 @@ class Transport:
 
     # --------------------------------------------------------------- requests
 
-    async def _gate(self) -> None:
-        async with self._gate_lock:
-            wait = self._last_request_time + self.MIN_REQUEST_INTERVAL - time.monotonic()
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self._last_request_time = time.monotonic()
-
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         """Send a request and return its decoded body. See _request_with_status."""
         _, body = await self._request_with_status(method, path, **kwargs)
         return body
+
+    async def _upload(
+        self, path: str, field: str, payload: bytes, filename: str, content_type: str
+    ) -> Dict[str, Any]:
+        """Multipart upload as the web client does it: token in ?auth=, fresh FormData per attempt."""
+
+        def form() -> aiohttp.FormData:
+            # A FormData is single-use; the transport calls this once per attempt.
+            fd = aiohttp.FormData()
+            fd.add_field(field, payload, filename=filename, content_type=content_type)
+            return fd
+
+        body = await self._request("POST", path, form=form, query_token=True)
+        return _expect(dict, body, "the upload response")
 
     async def _request_with_status(
         self,
@@ -410,7 +453,6 @@ class Transport:
         replayed_401 = False
         previous_5xx = False
         while True:
-            await self._gate()
             sent_generation = self._token_generation
             query = {"apikey": self.APIKEY, **(params or {})}
             request_headers = {**self.BROWSER_HEADERS, **(headers or {})}

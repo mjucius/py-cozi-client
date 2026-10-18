@@ -1,11 +1,11 @@
 """Recipes endpoints with aioresponses: exact method, path and body for each."""
 
-import re
 from unittest.mock import AsyncMock, call
 
 import aiohttp
 import pytest
 
+from cozi_client import MAX_PHOTO_BYTES
 from cozi_client.exceptions import (
     APIError,
     CoziValidationError,
@@ -13,13 +13,11 @@ from cozi_client.exceptions import (
     ResponseParseError,
     WriteVerificationError,
 )
-from cozi_client.recipes import MAX_PHOTO_BYTES, CoziIngredient, CoziRecipe
-from tests.conftest import TEST_ACCESS_TOKEN, api, sent, sent_query
+from cozi_client.recipes import CoziIngredient, CoziRecipe
+from tests.conftest import PHOTO, RECIPES, TEST_ACCESS_TOKEN, UUID4, api, sent, sent_query
 
-RECIPES = "/2103/{acct}/food/recipe/"
 SCRAPE = "/2103/{acct}/food/scrape/recipe/"
 CURATED = "/2103/{acct}/food/curated/recipe/"
-UUID4 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 
 STORED = {
     "recipeBoxId": "rb1",
@@ -260,9 +258,6 @@ async def test_save_curated_recipe_refuses_a_box_recipe(client, mocked):
     assert sent(mocked, "POST", RECIPES) == []
 
 
-PHOTO = "/2103/{acct}/food/recipe/rb1/photo"
-
-
 async def test_upload_recipe_photo_then_resaves_with_photo_first(client, mocked):
     mocked.get(api(RECIPES), payload=[STORED], repeat=True)
     mocked.post(api(PHOTO), payload={"thumbUrl": "t1", "viewUrl": "v1"})
@@ -288,7 +283,7 @@ async def test_upload_to_a_deleted_recipe_raises_before_uploading(client, mocked
 
 
 async def test_photo_size_cap_is_inclusive_and_checked_before_io(client, mocked):
-    with pytest.raises(CoziValidationError, match="at most"):
+    with pytest.raises(CoziValidationError, match="larger than"):
         await client.upload_recipe_photo(stored(), b"\0" * (MAX_PHOTO_BYTES + 1), "big.png")
     assert sent(mocked, "POST", PHOTO) == []
     mocked.get(api(RECIPES), payload=[STORED], repeat=True)
@@ -298,7 +293,10 @@ async def test_photo_size_cap_is_inclusive_and_checked_before_io(client, mocked)
     assert len(sent(mocked, "POST", PHOTO)) == 1
 
 
-@pytest.mark.parametrize("data,filename,box", [(None, "a.png", "rb1"), ("str", "a.png", "rb1"), (b"x", " ", "rb1"), (b"x", "a.png", None)])
+@pytest.mark.parametrize(
+    "data,filename,box",
+    [(None, "a.png", "rb1"), ("str", "a.png", "rb1"), (b"", "a.png", "rb1"), (b"x", " ", "rb1"), (b"x", "a.png", None)],
+)
 async def test_upload_recipe_photo_validates_before_io(client, mocked, data, filename, box):
     recipe = CoziRecipe.model_validate({**STORED, "recipeBoxId": box})
     with pytest.raises(CoziValidationError):

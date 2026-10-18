@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.0.0] - 2026-10-16
+## [3.0.0] - 2026-10-18
 
 A rewrite to match the production web client at `my.cozi.com` (bundle `main.c43180f9`). The
 paths, methods and bodies of the ten calls 2.x made were already right. What was wrong was the
@@ -35,6 +35,8 @@ several signatures and the models change; the table below maps 2.x to 3.0.
 | `CoziAppointment.end_day` (a `str` field) | A read-only `date` property, read from `recurrence.endDay` (the last day of the series) |
 | `CoziAppointment.recurrence_start_day: str` | `date` |
 | `CoziPerson.settings: dict`, `email_status: str` | `PersonSettings`, and `EmailStatus` (or a plain `str` for values Cozi adds later) |
+| `CoziPerson.phone`, `is_adult`, `account_person_type`, `account_creator`, `notifiable`, `notifiable_features` | Removed as fields. The web client never reads them; their wire keys (`phoneNumberKey`, `isAdult`, ...) are kept as pydantic extras. |
+| `delete_list`, `remove_items`, `delete_appointment` returned `True` | Return `None`, as do the new `delete_item` and `delete_meal`. A failure raises. |
 | Python 3.7+ | Python 3.10+ |
 
 ### Fixed
@@ -85,7 +87,7 @@ several signatures and the models change; the table below maps 2.x to 3.0.
   `PermissionDeniedError`. An error's message includes Cozi's `detail` when it sends one.
 - **Timeouts and retries.** The timeout applies per attempt, including on an injected session.
   A 401 replay no longer uses up a retry. A DELETE retried after a 5xx that then gets 404 counts
-  as success. Requests stay at least 100 ms apart, under a lock.
+  as success.
 - **The 201-upsert guard covers list writes too.** `update_list` and `rename_list` now refuse
   to create a list, as `update_item_text` and `mark_item` already refused to create an item.
 - **`remove_items` is stricter.** A response that is not a list now raises

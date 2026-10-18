@@ -9,7 +9,6 @@ in ``rejectedItems``, so every write checks it and returns what Cozi stored, rea
 from that page.
 """
 
-import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -19,10 +18,17 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic import ValidationError as PydanticValidationError
 
-from ._transport import Transport, parse_model, validate_calendar_period, validate_id
+from ._transport import (
+    Transport,
+    logger,
+    parse_model,
+    validate_calendar_period,
+    validate_id,
+    validate_ids,
+    validate_int,
+    validate_text,
+)
 from .exceptions import CoziValidationError, ResponseParseError, WriteVerificationError
-
-logger = logging.getLogger("cozi_client")
 
 _ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _HMS = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?$")
@@ -100,8 +106,7 @@ def repeat_rule(
     freq = frequency.lower() if isinstance(frequency, str) else ""
     if freq not in ("daily", "weekly", "monthly", "yearly"):
         raise CoziValidationError(f"Unknown repeat frequency: {frequency!r}")
-    if isinstance(interval, bool) or not isinstance(interval, int) or interval < 1:
-        raise CoziValidationError(f"Repeat interval must be a positive integer, got {interval!r}")
+    validate_int(interval, "repeat interval", 1)
     if weekdays is not None and freq != "weekly":
         raise CoziValidationError("weekdays applies only to a weekly repeat")
     if monthly_by not in ("date", "weekday"):
@@ -357,9 +362,7 @@ def _reminders(minutes: Sequence[int]) -> List[Dict[str, int]]:
 def _notify_fields(notify: Optional[Sequence[str]]) -> Dict[str, Any]:
     if not notify:
         return {}
-    if isinstance(notify, str):
-        raise CoziValidationError("notify must be a list of person ids")
-    return {"notifyPersons": [validate_id(p, "person id") for p in notify]}
+    return {"notifyPersons": validate_ids(notify, "notify")}
 
 
 def _scope_fields(occ: Optional[Occurrence]) -> Dict[str, Any]:
@@ -549,9 +552,8 @@ class CalendarMixin(Transport):
         Returns ``(items, has_more)``; there is no way to fetch further pages. The index
         trails writes by a few seconds and does not reach back more than a few years.
         """
-        if not isinstance(query, str) or not query.strip():
-            raise CoziValidationError("Search query cannot be empty")
-        body = await self._request("GET", "/2004/{acct}/search/calendar/", params={"q": query.strip()})
+        query = validate_text(query, "Search query")
+        body = await self._request("GET", "/2004/{acct}/search/calendar/", params={"q": query})
         index = _occurrence_index(body.get("days") if isinstance(body, dict) else None)
         found = []
         for key, hit in _items_of(body).items():
@@ -579,8 +581,7 @@ class CalendarMixin(Transport):
         Nothing is stored; pass the result to create_appointment. ``now`` anchors
         relative dates (default: local time with its offset, as the web sends it).
         """
-        if not isinstance(text, str) or not text.strip():
-            raise CoziValidationError("Text to parse cannot be empty")
+        validate_text(text, "Text to parse")
         now = now or datetime.now()
         if now.tzinfo is None:
             now = now.astimezone()
@@ -691,7 +692,7 @@ class CalendarMixin(Transport):
 
     async def delete_appointment(
         self, appt: CoziAppointment, scope: Scope = None, notify: Optional[Sequence[str]] = None
-    ) -> bool:
+    ) -> None:
         """
         Delete an appointment or birthday. A series needs a ``scope`` (see update_appointment).
 
@@ -713,7 +714,6 @@ class CalendarMixin(Transport):
         await self._write(
             occ.day if occ else appt.start_day, _delete_op(appt, fields, notify), "delete", appt.id
         )
-        return True
 
     async def create_birthday(
         self,
@@ -728,13 +728,12 @@ class CalendarMixin(Transport):
         ``birth_year``, or in 1904 when it is None (live 2026-10-16), so that is the
         ``start_day`` it reads back with.
         """
-        if not isinstance(name, str) or not name.strip():
-            raise CoziValidationError("Birthday name cannot be empty")
+        name = validate_text(name, "Birthday name")
         appt = _new(
             {
                 "start_day": day,
                 "item_type": "birthday",
-                "name": name.strip(),
+                "name": name,
                 "birth_year": birth_year,
                 "reminders": reminders,
             }
@@ -745,7 +744,7 @@ class CalendarMixin(Transport):
         return await self._create(
             appt.start_day,
             _birthday_op(appt, "create"),
-            lambda a: a.item_type == "birthday" and a.name == name.strip(),
+            lambda a: a.item_type == "birthday" and a.name == name,
         )
 
     async def create_meal(
@@ -795,14 +794,13 @@ class CalendarMixin(Transport):
             )
         return page[meal.id]
 
-    async def delete_meal(self, meal: CoziAppointment) -> bool:
+    async def delete_meal(self, meal: CoziAppointment) -> None:
         """Delete a meal read from get_calendar."""
         validate_id(meal.id, "meal id")
         if meal.item_type != "meal":
             raise CoziValidationError(f"{meal.id} is not a meal")
         fields = {"selectedDay": meal.start_day.isoformat(), "extent": Extent.DAY.value}
         await self._write(meal.start_day, _delete_op(meal, fields, None), "delete", meal.id)
-        return True
 
     # ------------------------------------------------------------- helpers
 

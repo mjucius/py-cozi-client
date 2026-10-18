@@ -12,11 +12,8 @@ from cozi_client.exceptions import (
     ResponseParseError,
     WriteVerificationError,
 )
-from tests.conftest import api, sent, sent_query
+from tests.conftest import FEB, JAN, SEARCH, api, sent, sent_query
 
-JAN = "/2004/{acct}/calendar/2019/1"
-FEB = "/2004/{acct}/calendar/2019/2"
-SEARCH = "/2004/{acct}/search/calendar/"
 UUID = "0f8fad5b-d9cb-469f-a165-70867728950e"
 
 
@@ -656,7 +653,7 @@ class TestUpdate:
 class TestDelete:
     async def test_one_off_sends_version(self, client, mocked):
         mocked.post(api(JAN), payload=page())
-        assert await client.delete_appointment(one_off(), notify=["p1"]) is True
+        await client.delete_appointment(one_off(), notify=["p1"])
         assert posted(mocked) == [
             [{"itemType": "appointment", "delete": {"id": "a1", "version": 3}, "notifyPersons": ["p1"]}]
         ]
@@ -944,7 +941,7 @@ class TestMeal:
 
     async def test_delete(self, client, mocked):
         mocked.post(api(JAN), payload=page())
-        assert await client.delete_meal(CoziAppointment.model_validate(meal_raw())) is True
+        await client.delete_meal(CoziAppointment.model_validate(meal_raw()))
         assert posted(mocked) == [
             [
                 {

@@ -1,12 +1,9 @@
 """Account endpoints over a real socket (tests/stub_cozi.py): exact paths, bases and auth modes."""
 
 from cozi_client.account import FAMILY_FEED_ID, HOLIDAY_CALENDARS, CoziPerson, default_settings
+from tests.conftest import HOUSEHOLD, PERSONS, SHARED, UPLOAD
 
-PERSONS = "/2004/{acct}/account/person/"
-HOUSEHOLD = "/2004/{acct}/account/"
-SHARED = "/calendar/sharedcalendar/{acct}/"
 INTERNET = "/calendar/sharedcalendar/internetcalendar/"
-UPLOAD = "/2111/{acct}/photo/uploader.json"
 US = HOLIDAY_CALENDARS["US"]
 
 OFF = {

@@ -2,17 +2,27 @@
 
 import asyncio
 import logging
-import time
 import traceback
 
 import aiohttp
 import pytest
+from aioresponses import CallbackResult
 from multidict import CIMultiDict, CIMultiDictProxy
 from pydantic import BaseModel
 from yarl import URL
 
 from cozi_client import CoziClient
-from cozi_client._transport import parse_model, parse_models, validate_calendar_period, validate_id
+from cozi_client._transport import (
+    MAX_PHOTO_BYTES,
+    parse_model,
+    parse_models,
+    validate_calendar_period,
+    validate_id,
+    validate_ids,
+    validate_int,
+    validate_photo,
+    validate_text,
+)
 from cozi_client.exceptions import (
     APIError,
     AuthenticationError,
@@ -28,6 +38,7 @@ from cozi_client.exceptions import (
 from tests.conftest import (
     API_ROOT,
     AUTH_URL,
+    LISTS,
     LOGIN_PATH,
     REAUTH_PATH,
     TEST_ACCESS_TOKEN,
@@ -39,7 +50,6 @@ from tests.conftest import (
     sent_query,
 )
 
-LISTS = "/2004/{acct}/list/"
 LISTS_URL = api(LISTS)
 REAUTH_URL = api(REAUTH_PATH)
 LOGOUT_PATH = "/2111/{acct}/auth/logout"
@@ -359,11 +369,22 @@ class TestRenewal:
             await client._request("GET", LISTS)
 
     async def test_concurrent_401s_renew_once(self, client, mocked):
-        for _ in range(3):
-            mocked.get(LISTS_URL, status=401)
+        # Cozi answers by token, not by arrival order. The stale-token answers are held until
+        # all three requests are in flight, so each sees a 401 before any renewal lands.
+        stale = []
+        all_in = asyncio.Event()
+
+        async def by_token(url, **kwargs):
+            if kwargs["headers"]["Authorization"] == "Bearer tok-2":
+                return CallbackResult(payload=[])
+            stale.append(url)
+            if len(stale) == 3:
+                all_in.set()
+            await asyncio.wait_for(all_in.wait(), 1)
+            return CallbackResult(status=401)
+
+        mocked.get(LISTS_URL, callback=by_token, repeat=True)
         mocked.post(REAUTH_URL, payload=token(2))
-        for _ in range(3):
-            mocked.get(LISTS_URL, payload=[])
         await asyncio.gather(*(client._request("GET", LISTS) for _ in range(3)))
         assert len(sent(mocked, "POST", REAUTH_PATH)) == 1
 
@@ -452,16 +473,6 @@ class TestPasswords:
                 await cozi.submit_password_reset("../x", "req-1", "n3w")
 
 
-class TestGate:
-    async def test_concurrent_requests_are_spaced(self, client, mocked, monkeypatch):
-        monkeypatch.setattr(client, "MIN_REQUEST_INTERVAL", 0.05)
-        for _ in range(3):
-            mocked.get(LISTS_URL, payload=[])
-        start = time.monotonic()
-        await asyncio.gather(*(client._request("GET", LISTS) for _ in range(3)))
-        assert time.monotonic() - start >= 0.1
-
-
 class TestValidators:
     @pytest.mark.parametrize("good", ["abc", "A-b_9", "0ff00c00f4106e69fe473d8941238e971025b7cb"])
     def test_validate_id_accepts(self, good):
@@ -479,6 +490,55 @@ class TestValidators:
     def test_validate_calendar_period_rejects(self, year, month):
         with pytest.raises(CoziValidationError):
             validate_calendar_period(year, month)
+
+    def test_validate_text_strips(self):
+        assert validate_text("  Milk \n", "Item text") == "Milk"
+
+    @pytest.mark.parametrize("bad", ["", " \t\n", None, 5])
+    def test_validate_text_rejects(self, bad):
+        with pytest.raises(CoziValidationError, match="^Item text cannot be empty$"):
+            validate_text(bad, "Item text")
+
+    @pytest.mark.parametrize(
+        "value,low,high,message",
+        [
+            (True, 0, None, "Invalid n: expected an integer, got True"),
+            ("1", 0, None, "Invalid n: expected an integer, got '1'"),
+            (-1, 0, None, "Invalid n: expected an integer >= 0, got -1"),
+            (13, 1, 12, "Invalid n: 13 is not in 1-12"),
+        ],
+    )
+    def test_validate_int_rejects(self, value, low, high, message):
+        with pytest.raises(CoziValidationError) as info:
+            validate_int(value, "n", low, high)
+        assert str(info.value) == message
+
+    def test_validate_int_accepts(self):
+        assert validate_int(0, "n") == 0
+        assert validate_int(12, "n", 1, 12) == 12
+
+    @pytest.mark.parametrize("bad", ["abc", None, 5, ["ok", "../x"]])
+    def test_validate_ids_rejects(self, bad):
+        with pytest.raises(CoziValidationError):
+            validate_ids(bad, "item_ids")
+
+    def test_validate_ids_accepts(self):
+        assert validate_ids(("a-1", "b_2"), "item_ids") == ["a-1", "b_2"]
+
+    @pytest.mark.parametrize(
+        "bad,message",
+        [
+            (b"", "non-empty bytes"),
+            ("jpeg", "non-empty bytes"),
+            (bytearray(MAX_PHOTO_BYTES + 1), "larger than 20 MB"),
+        ],
+    )
+    def test_validate_photo_rejects(self, bad, message):
+        with pytest.raises(CoziValidationError, match=message):
+            validate_photo(bad)
+
+    def test_validate_photo_returns_bytes(self):
+        assert validate_photo(bytearray(b"\xff\xd8")) == b"\xff\xd8"
 
 
 class _Thing(BaseModel):

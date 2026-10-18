@@ -80,7 +80,10 @@ class TestPerson:
 
     def test_unknown_keys_survive_at_every_level(self):
         p = CoziPerson.model_validate(WEB_PERSON)
-        assert p.model_extra == {"futureKey": {"x": 1}}
+        # The wire keys the web never reads (phoneNumberKey, isAdult, ...) are extras too.
+        named = ("accountPersonId", "name", "email", "emailStatus", "colorIndex", "settings", "version")
+        assert p.model_extra == {k: v for k, v in WEB_PERSON.items() if k not in named}
+        assert p.model_dump(by_alias=True)["phoneNumberKey"] is None
         assert p.settings.calendar_item_notification.model_extra == {"sendByDefault": True}
         assert p.settings.model_dump(by_alias=True) == WEB_PERSON["settings"]
 

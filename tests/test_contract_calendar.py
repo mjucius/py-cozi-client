@@ -3,10 +3,8 @@
 from datetime import date, datetime, time, timezone
 
 from cozi_client.calendar import CoziAppointment, Extent, Occurrence
+from tests.conftest import FEB, JAN, SEARCH
 
-JAN = "/2004/{acct}/calendar/2019/1"
-FEB = "/2004/{acct}/calendar/2019/2"
-SEARCH = "/2004/{acct}/search/calendar/"
 PRINT = "/2207/{acct}/printing/calendar/week/20190107"
 PARSE = "/2307/{acct}/calendar/parse/"
 

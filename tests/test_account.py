@@ -12,14 +12,20 @@ from cozi_client.account import (
     default_settings,
 )
 from cozi_client.exceptions import CoziValidationError, ResourceNotFoundError, ResponseParseError
-from tests.conftest import REAUTH_PATH, TEST_ACCESS_TOKEN, api, sent, sent_query
+from tests.conftest import (
+    HOUSEHOLD,
+    PERSONS,
+    REAUTH_PATH,
+    SHARED,
+    TEST_ACCESS_TOKEN,
+    UPLOAD,
+    api,
+    sent,
+    sent_query,
+)
 
 UNVERSIONED = "https://rest.cozi.com/api"
-PERSONS = "/2004/{acct}/account/person/"
-HOUSEHOLD = "/2004/{acct}/account/"
 CONFIG = "/2004/{acct}/config/"
-UPLOAD = "/2111/{acct}/photo/uploader.json"
-SHARED = "/calendar/sharedcalendar/{acct}/"
 US = HOLIDAY_CALENDARS["US"]
 
 OFF = {
@@ -306,7 +312,7 @@ class TestHousehold:
             ({}, "Nothing to update"),
             ({"name": ""}, "name cannot be empty"),
             ({"color_index": False}, "Invalid color index"),
-            ({"timezone": " "}, "IANA"),
+            ({"timezone": " "}, "Timezone cannot be empty"),
         ],
     )
     async def test_update_validates_before_any_request(self, client, mocked, kwargs, message):
@@ -367,6 +373,7 @@ class TestHouseholdPhoto:
             ("text", "a.jpg", "non-empty bytes"),
             (b"x" * (20 * 1024 * 1024 + 1), "a.jpg", "larger than 20 MB"),
             (b"x", "a.gif", ".jpg, .jpeg or .png"),
+            (b"x", "a.png.gz", ".jpg, .jpeg or .png"),
             (b"x", None, "filename"),
         ],
     )

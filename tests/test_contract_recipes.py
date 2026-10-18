@@ -7,9 +7,8 @@ import json
 from aiohttp import web
 
 from cozi_client.recipes import CoziRecipe
+from tests.conftest import PHOTO, RECIPES
 
-RECIPES = "/2103/{acct}/food/recipe/"
-PHOTO = "/2103/{acct}/food/recipe/rb1/photo"
 # A valid 1x1 transparent PNG.
 PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"

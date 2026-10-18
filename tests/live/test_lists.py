@@ -76,7 +76,7 @@ async def test_create_rename_delete(live_client):
         assert after["listType"] == "todo"
         assert after["items"] == before["items"]
     finally:
-        assert await cozi.delete_list(created.id) is True
+        await cozi.delete_list(created.id)
     assert await raw_list(cozi, created.id) is None
 
     # Observed 2026-10-16: an unknown uuid is a 400 ("List type None is not valid"),
@@ -195,11 +195,11 @@ async def test_delete_item_and_unknown_ids(live_client):
     async with throwaway(cozi) as lst:
         a = await cozi.add_item(lst.id, "a")
         b = await cozi.add_item(lst.id, "b", position=1)
-        assert await cozi.delete_item(lst.id, a.id) is True
+        await cozi.delete_item(lst.id, a.id)
         assert await raw_items(cozi, lst.id) == [(b.id, "b", "incomplete", None)]
 
         # Observed 2026-10-16: an unknown uuid answers 204, a non-uuid 404.
-        assert await cozi.delete_item(lst.id, str(uuid.uuid4())) is True
+        await cozi.delete_item(lst.id, str(uuid.uuid4()))
         with pytest.raises(ResourceNotFoundError) as e:
             await cozi.delete_item(lst.id, "no-such-item-id")
         assert e.value.status_code == 404
@@ -212,11 +212,11 @@ async def test_remove_items(live_client):
         a = await cozi.add_item(lst.id, "a")
         b = await cozi.add_item(lst.id, "b", position=1)
         c = await cozi.add_item(lst.id, "c", position=2)
-        assert await cozi.remove_items(lst.id, [a.id, c.id, str(uuid.uuid4())]) is True
+        await cozi.remove_items(lst.id, [a.id, c.id, str(uuid.uuid4())])
         assert await raw_items(cozi, lst.id) == [(b.id, "b", "incomplete", None)]
 
         # Ids match case-insensitively; the survivor check must agree.
-        assert await cozi.remove_items(lst.id, [b.id.upper()]) is True
+        await cozi.remove_items(lst.id, [b.id.upper()])
         assert await raw_items(cozi, lst.id) == []
 
         # Cozi validates the pointer: only /items/<uuid> is accepted.

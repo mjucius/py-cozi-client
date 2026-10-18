@@ -10,10 +10,19 @@ import re
 import uuid
 from typing import Any, Dict, List, NoReturn, Optional, Union
 
-import aiohttp
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ._transport import ID_PATTERN, MAX_PHOTO_BYTES, Transport, _reason, logger, parse_model, parse_models, validate_id
+from ._transport import (
+    ID_PATTERN,
+    Transport,
+    _reason,
+    logger,
+    parse_model,
+    parse_models,
+    validate_id,
+    validate_photo,
+    validate_text,
+)
 from .exceptions import (
     APIError,
     CoziException,
@@ -22,7 +31,7 @@ from .exceptions import (
     ResponseParseError,
     WriteVerificationError,
 )
-from .lists import CoziItem, _item_text, _text
+from .lists import CoziItem, _item_text
 
 RECIPES = "/2103/{acct}/food/recipe/"
 SCRAPE = "/2103/{acct}/food/scrape/recipe/"
@@ -97,8 +106,7 @@ def _lines(value: Union[str, List[str]], name: str) -> List[str]:
 def _saveable(recipe: CoziRecipe) -> str:
     """The recipe_box_id of a recipe update_recipe may re-save, checked before any I/O."""
     box_id = validate_id(recipe.recipe_box_id, "recipe_box_id")
-    if not isinstance(recipe.name, str) or not recipe.name.strip():
-        raise CoziValidationError("Recipe name cannot be empty")
+    validate_text(recipe.name, "Recipe name")
     # ponytail: heuristic guard (a recipe read from Cozi always carries these keys);
     # fetch-then-merge is the upgrade if callers need to build recipes by hand.
     if not {"ingredients", "instructions", "recipe_id"} & recipe.model_fields_set:
@@ -132,8 +140,7 @@ class RecipesMixin(Transport):
         lines are dropped. ``categories`` become has-folder tags. The body matches
         the web client's "Typed Into Cozi" save.
         """
-        if not isinstance(name, str) or not name.strip():
-            raise CoziValidationError("Recipe name cannot be empty")
+        validate_text(name, "Recipe name")
         lines = _lines(ingredients, "ingredients")
         folders = _lines(categories or [], "categories")
         for label, value in (("instructions", instructions), ("description", description),
@@ -194,7 +201,7 @@ class RecipesMixin(Transport):
         cleanup = "no new id came back to remove"
         if isinstance(new_id, str) and ID_PATTERN.fullmatch(new_id):
             try:
-                await self._request("DELETE", f"/2103/{{acct}}/food/recipe/{new_id}")
+                await self._request("DELETE", RECIPES + new_id)
                 cleanup = f"the duplicate {new_id} was removed"
             except CoziException as e:
                 logger.warning("Could not remove duplicate recipe %s: %s", new_id, type(e).__name__)
@@ -206,7 +213,7 @@ class RecipesMixin(Transport):
     async def delete_recipe(self, recipe_box_id: str) -> None:
         """Delete a recipe from the box by its recipe_box_id."""
         recipe_box_id = validate_id(recipe_box_id, "recipe_box_id")
-        await self._request("DELETE", f"/2103/{{acct}}/food/recipe/{recipe_box_id}")
+        await self._request("DELETE", RECIPES + recipe_box_id)
 
     async def import_recipe(self, url: str, save: bool = False) -> CoziRecipe:
         """
@@ -218,8 +225,7 @@ class RecipesMixin(Transport):
         APIError (the reason is in ``response_data["detail"]``); a page with no
         recipe comes back as a recipe with no ingredients.
         """
-        if not isinstance(url, str) or not url.strip():
-            raise CoziValidationError("Recipe url cannot be empty")
+        validate_text(url, "Recipe url")
         body = await self._request("POST", SCRAPE, json={"url": url, "save": bool(save)})
         if not isinstance(body, dict) or body.get("error"):
             raise APIError(
@@ -249,34 +255,15 @@ class RecipesMixin(Transport):
         prepended: the upload alone does not attach it. ``recipe`` must be one
         update_recipe accepts.
         """
-        if not isinstance(data, (bytes, bytearray)):
-            raise CoziValidationError("Photo data must be bytes")
-        if len(data) > MAX_PHOTO_BYTES:
-            raise CoziValidationError(f"Photo is {len(data)} bytes; Cozi accepts at most {MAX_PHOTO_BYTES}")
-        if not isinstance(filename, str) or not filename.strip():
-            raise CoziValidationError("Photo filename cannot be empty")
+        payload = validate_photo(data)
+        validate_text(filename, "Photo filename")
         # The re-save's checks, before the upload: a refused re-save would orphan the photo.
         box_id = _saveable(recipe)
         if not await self._recipe_exists(box_id):
             # Cozi would take the upload (200) and the re-save, and store neither.
             raise ResourceNotFoundError(f"Recipe {box_id} does not exist; no photo was uploaded")
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-        payload = bytes(data)
-
-        def form() -> aiohttp.FormData:
-            fd = aiohttp.FormData()
-            fd.add_field("file", payload, filename=filename, content_type=content_type)
-            return fd
-
-        photo = await self._request(
-            "POST", f"/2103/{{acct}}/food/recipe/{box_id}/photo", form=form, query_token=True
-        )
-        if not isinstance(photo, dict):
-            # The web client swallows this and saves photos:[undefined, ...].
-            raise ResponseParseError(
-                f"Expected a photo object from Cozi, got {type(photo).__name__}",
-                response_data={"response": photo},
-            )
+        photo = await self._upload(f"{RECIPES}{box_id}/photo", "file", payload, filename, content_type)
         return await self.update_recipe(recipe.model_copy(update={"photos": [photo, *(recipe.photos or [])]}))
 
     async def add_recipe_to_list(self, recipe: CoziRecipe, list_id: str) -> List[CoziItem]:
@@ -289,16 +276,15 @@ class RecipesMixin(Transport):
         leaves the items already added.
         """
         list_id = validate_id(list_id, "list_id")
-        if not isinstance(recipe.name, str) or not recipe.name.strip():
-            raise CoziValidationError("Recipe name cannot be empty")
+        title = validate_text(recipe.name, "Recipe name")  # stripped: add_item strips it anyway
         # validate_assignment does not see an in-place .append.
         if not all(isinstance(i, CoziIngredient) for i in recipe.ingredients or []):
             raise CoziValidationError("recipe.ingredients must be CoziIngredient objects")
         names = [i.name for i in recipe.ingredients or [] if isinstance(i.name, str) and i.name.strip()]
         for name in names:
-            _item_text(_text(name, "Ingredient"), False)  # add_item's refusal, before anything is sent
+            _item_text(validate_text(name, "Ingredient"), False)  # add_item's refusal, before anything is sent
         # The header needs no pre-check: it is the first add, and add_item checks before sending.
-        items = [await self.add_item(list_id, recipe.name.upper(), position=0, header=True)]  # type: ignore[attr-defined]
+        items = [await self.add_item(list_id, title.upper(), position=0, header=True)]  # type: ignore[attr-defined]
         for position, name in enumerate(names, start=1):
             items.append(await self.add_item(list_id, name, position=position))  # type: ignore[attr-defined]
         return items

@@ -12,10 +12,20 @@ import re
 from enum import Enum
 from typing import Any, Callable, Dict, Iterable, List, Optional, TypeVar, Union
 
-import aiohttp
 from pydantic import BaseModel, ConfigDict, Field
 
-from ._transport import JSON_CONTENT_TYPE, MAX_PHOTO_BYTES, Transport, parse_model, parse_models, validate_id
+from ._transport import (
+    JSON_CONTENT_TYPE,
+    Transport,
+    _expect,
+    parse_model,
+    parse_models,
+    validate_id,
+    validate_ids,
+    validate_int,
+    validate_photo,
+    validate_text,
+)
 from .exceptions import CoziValidationError, ResourceNotFoundError, ResponseParseError
 
 # The iCal feed id of the whole family (the per-person feeds use person ids).
@@ -73,22 +83,14 @@ class PersonSettings(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
-    # model_validate({}) rather than the class: mypy without the pydantic plugin
-    # treats aliased fields as required constructor arguments.
     calendar_item_notification: NotificationChannel = Field(
-        default_factory=lambda: NotificationChannel.model_validate({}),
-        alias="calendarItemNotification",
+        default_factory=NotificationChannel, alias="calendarItemNotification"
     )
     calendar_item_reminder: NotificationChannel = Field(
-        default_factory=lambda: NotificationChannel.model_validate({}),
-        alias="calendarItemReminder",
+        default_factory=NotificationChannel, alias="calendarItemReminder"
     )
-    daily_agenda: AgendaChannel = Field(
-        default_factory=lambda: AgendaChannel.model_validate({}), alias="dailyAgenda"
-    )
-    weekly_agenda: AgendaChannel = Field(
-        default_factory=lambda: AgendaChannel.model_validate({}), alias="weeklyAgenda"
-    )
+    daily_agenda: AgendaChannel = Field(default_factory=AgendaChannel, alias="dailyAgenda")
+    weekly_agenda: AgendaChannel = Field(default_factory=AgendaChannel, alias="weeklyAgenda")
 
     @property
     def any_email(self) -> bool:
@@ -123,13 +125,7 @@ def default_settings(email: str = "") -> PersonSettings:
 
 
 class CoziPerson(BaseModel):
-    """
-    A family member.
-
-    ``phone``, ``is_adult``, ``account_person_type``, ``account_creator``,
-    ``notifiable``, ``version`` and ``notifiable_features`` are still on the wire but
-    the web client never reads them; they are kept for 2.x callers.
-    """
+    """A family member."""
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
@@ -142,13 +138,7 @@ class CoziPerson(BaseModel):
         None, alias="emailStatus", union_mode="left_to_right"
     )
     settings: Optional[PersonSettings] = None
-    phone: Optional[str] = Field(None, alias="phoneNumberKey")
-    is_adult: Optional[bool] = Field(None, alias="isAdult")
-    account_person_type: Optional[str] = Field(None, alias="accountPersonType")
-    account_creator: Optional[bool] = Field(None, alias="accountCreator")
-    notifiable: Optional[bool] = None
     version: Optional[int] = None
-    notifiable_features: Optional[List[str]] = Field(None, alias="notifiableFeatures")
 
 
 class CoziHousehold(BaseModel):
@@ -194,17 +184,9 @@ class CoziCalendarSubscription(BaseModel):
     attendees: List[str] = Field(default_factory=list)
 
 
-def _check_color(value: Any) -> int:
-    # bool is an int subclass; True would otherwise pass as colour 1.
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise CoziValidationError(f"Invalid color index: {value!r}")
-    return value
-
-
 def _person_body(name: Any, email: Any, color_index: Any, settings: Any) -> Dict[str, Any]:
     """The web's add/edit body: always these four keys, never an id or version."""
-    if not isinstance(name, str) or not name.strip():
-        raise CoziValidationError("Name cannot be empty")
+    validate_text(name, "Name")
     if not isinstance(email, str):
         raise CoziValidationError(f"Invalid email: expected a string, got {type(email).__name__}")
     # Stripped so "   " counts as no email in the guards below and in update_person.
@@ -219,7 +201,7 @@ def _person_body(name: Any, email: Any, color_index: Any, settings: Any) -> Dict
     return {
         "name": name,
         "email": email,
-        "colorIndex": _check_color(color_index),
+        "colorIndex": validate_int(color_index, "color index"),
         "settings": settings.model_dump(by_alias=True),
     }
 
@@ -231,13 +213,6 @@ def _find(persons: List[CoziPerson], person_id: str) -> CoziPerson:
     raise ResourceNotFoundError(f"No family member with id {person_id}")
 
 
-def _ids(ids: Iterable[str]) -> List[str]:
-    # A str would iterate one id per character; None or an int would raise TypeError.
-    if isinstance(ids, str) or not isinstance(ids, Iterable):
-        raise CoziValidationError("attendee_ids must be a list of person ids")
-    return [validate_id(i, "attendee_id") for i in ids]
-
-
 def _parse_secret(parse: Callable[[], T]) -> T:
     """Run a parse whose input holds bearer-secret URLs; a failure keeps only the message."""
     try:
@@ -246,13 +221,6 @@ def _parse_secret(parse: Callable[[], T]) -> T:
         # parse_model attaches the input and chains pydantic's error (which repeats
         # the input); either would put a feed or calendar URL into a logged traceback.
         raise ResponseParseError(str(e)) from None
-
-
-def _expect(kind: type, body: Any, what: str) -> Any:
-    # An empty 2xx decodes to True; never hand that back as data. No body in the message.
-    if not isinstance(body, kind):
-        raise ResponseParseError(f"Expected {what} as a {kind.__name__}, got {type(body).__name__}")
-    return body
 
 
 class AccountMixin(Transport):
@@ -365,17 +333,13 @@ class AccountMixin(Transport):
         """
         body: Dict[str, Any] = {}
         if name is not None:
-            if not isinstance(name, str) or not name.strip():
-                raise CoziValidationError("Household name cannot be empty")
+            validate_text(name, "Household name")
             body["name"] = name
         if color_index is not None:
-            body["colorIndex"] = _check_color(color_index)
+            body["colorIndex"] = validate_int(color_index, "color index")
         if timezone is not None:
             # ponytail: not checked against zoneinfo (absent without tzdata); Cozi decides.
-            if not isinstance(timezone, str) or not timezone.strip():
-                raise CoziValidationError(
-                    "Timezone must be an IANA name such as 'America/New_York'"
-                )
+            validate_text(timezone, "Timezone")
             body["timezone"] = timezone
         if not body:
             raise CoziValidationError("Nothing to update: pass name, color_index or timezone")
@@ -389,28 +353,16 @@ class AccountMixin(Transport):
         with the token in the query (no Bearer), then PUT /account/ {photo: <response>}.
         There is no way to put the previous photo back.
         """
-        if not isinstance(data, (bytes, bytearray)) or not data:
-            raise CoziValidationError("Photo data must be non-empty bytes")
-        if len(data) > MAX_PHOTO_BYTES:
-            raise CoziValidationError("Photo is larger than 20 MB")
+        payload = validate_photo(data)
         if not isinstance(filename, str):
             raise CoziValidationError("filename must be a string")
         filename = os.path.basename(filename)  # never send the caller's directories
         content_type = PHOTO_TYPES.get(os.path.splitext(filename)[1].lower())
         if content_type is None:
             raise CoziValidationError("Photo must be a .jpg, .jpeg or .png file")
-        payload = bytes(data)
-
-        def form() -> aiohttp.FormData:
-            # A FormData is single-use; the transport calls this once per attempt.
-            fd = aiohttp.FormData()
-            fd.add_field("photopicker", payload, filename=filename, content_type=content_type)
-            return fd
-
-        photo = await self._request(
-            "POST", "/2111/{acct}/photo/uploader.json", form=form, query_token=True
+        photo = await self._upload(
+            "/2111/{acct}/photo/uploader.json", "photopicker", payload, filename, content_type
         )
-        photo = _expect(dict, photo, "the photo upload response")
         return parse_model(
             CoziHousehold, await self._request("PUT", HOUSEHOLD, json={"photo": photo})
         )
@@ -477,7 +429,7 @@ class AccountMixin(Transport):
         The web subscribes holiday calendars with no attendees.
         """
         calendar_id = validate_id(calendar_id, "calendar_id")
-        attendees = _ids(attendee_ids)
+        attendees = validate_ids(attendee_ids, "attendee_ids")
         await self._request(
             "PUT", f"{SHARED_CALENDARS}{calendar_id}/", json=attendees, unversioned=True
         )
@@ -493,13 +445,12 @@ class AccountMixin(Transport):
 
         Two calls, as on the web: POST internetcalendar/ {url}, then the subscribe PUT.
         """
-        if not isinstance(url, str) or not url.strip():
-            raise CoziValidationError("Calendar URL cannot be empty")
-        attendees = _ids(attendee_ids)
+        url = validate_text(url, "Calendar URL")
+        attendees = validate_ids(attendee_ids, "attendee_ids")
         body = await self._request(
             "POST",
             "/calendar/sharedcalendar/internetcalendar/",
-            json={"url": url.strip()},
+            json={"url": url},
             unversioned=True,
         )
         body = _expect(dict, body, "the internet calendar response")

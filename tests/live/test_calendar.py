@@ -226,7 +226,7 @@ async def test_delete_version_fresh_and_stale(cozi):
     with pytest.raises(WriteVerificationError, match="version mismatch"):
         await cozi.delete_appointment(stale)
     assert await months_listing(cozi, stored.id) == [3]
-    assert await cozi.delete_appointment(edited) is True
+    await cozi.delete_appointment(edited)
     assert await months_listing(cozi, stored.id) == []
 
 
@@ -487,7 +487,7 @@ async def test_birthday_create_edit_delete(cozi):
 
     this_year = date.today().year
     assert await listed(cozi, b.id, this_year, 2) is True
-    assert await cozi.delete_appointment(edited) is True
+    await cozi.delete_appointment(edited)
     assert await listed(cozi, b.id, 2019, 2) is False
     assert await listed(cozi, b.id, this_year, 2) is False
 
@@ -534,5 +534,5 @@ async def test_meal_create_edit_delete(cozi):
     ) == ("08:00:00", "10:00:00", "breakfast", [{"text": dish, "recipeBoxId": None}])
     assert edited == await fresh(cozi, meal.id)
 
-    assert await cozi.delete_meal(edited) is True
+    await cozi.delete_meal(edited)
     assert await listed(cozi, meal.id) is False

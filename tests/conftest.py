@@ -30,6 +30,20 @@ API_ROOT = "https://rest.cozi.com/api/ext"
 LOGIN_PATH = "/2207/auth/login"
 REAUTH_PATH = f"/2111/{TEST_ACCOUNT_ID}/auth/reauth"
 
+# Shared by the unit and contract modules; "{acct}" is filled in by api()/sent() and the stub.
+LISTS = "/2004/{acct}/list/"
+L1 = LISTS + "L1"
+JAN = "/2004/{acct}/calendar/2019/1"
+FEB = "/2004/{acct}/calendar/2019/2"
+SEARCH = "/2004/{acct}/search/calendar/"
+PERSONS = "/2004/{acct}/account/person/"
+HOUSEHOLD = "/2004/{acct}/account/"
+UPLOAD = "/2111/{acct}/photo/uploader.json"
+SHARED = "/calendar/sharedcalendar/{acct}/"
+RECIPES = "/2103/{acct}/food/recipe/"
+PHOTO = "/2103/{acct}/food/recipe/rb1/photo"
+UUID4 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+
 
 def api(path: str, root: str = API_ROOT) -> "re.Pattern[str]":
     """Regex for ``root + path`` with any query string. "{acct}" is the test account."""
@@ -78,7 +92,7 @@ def mocked():
 
 @pytest.fixture
 def no_sleep():
-    """Make retry backoff and the request gate instant."""
+    """Make retry backoff instant."""
     with patch("cozi_client._transport.asyncio.sleep", new=AsyncMock()) as m:
         yield m
 
