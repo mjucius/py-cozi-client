@@ -3,6 +3,7 @@
 import aiohttp
 import pytest
 
+from cozi_client import MAX_PHOTO_BYTES
 from cozi_client.account import (
     FAMILY_FEED_ID,
     HOLIDAY_CALENDARS,
@@ -371,7 +372,8 @@ class TestHouseholdPhoto:
         [
             (b"", "a.jpg", "non-empty bytes"),
             ("text", "a.jpg", "non-empty bytes"),
-            (b"x" * (20 * 1024 * 1024 + 1), "a.jpg", "larger than 20 MB"),
+            # An explicit id: pytest would otherwise put all 20 MB in the test id, and -v prints it.
+            pytest.param(b"x" * (MAX_PHOTO_BYTES + 1), "a.jpg", "larger than 20 MB", id="too-big"),
             (b"x", "a.gif", ".jpg, .jpeg or .png"),
             (b"x", "a.png.gz", ".jpg, .jpeg or .png"),
             (b"x", None, "filename"),

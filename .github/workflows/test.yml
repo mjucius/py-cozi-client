@@ -15,6 +15,8 @@ jobs:
   test:
     name: pytest (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    # The suite takes seconds; a hang should not hold the runner for GitHub's 6-hour default.
+    timeout-minutes: 10
     strategy:
       # Report every version's result; one old version failing should not hide
       # whether the others are fine.
@@ -43,9 +45,7 @@ jobs:
         run: pip list | grep -Ei "aiohttp|aioresponses|pydantic|pytest"
 
       - name: Run tests
-        # The suite takes seconds. If it hangs, SIGABRT after 5 min makes faulthandler print every
-        # thread's stack instead of holding the runner for GitHub's 6-hour default.
-        run: timeout -s ABRT 300 python -X faulthandler -m pytest
+        run: pytest
 
       - name: Examples compile
         run: python -m py_compile examples/*.py
